@@ -106,8 +106,8 @@ Found a bug? We'd love to fix it!
 1.  **Report Issues**: Open a ticket on [GitHub Issues](https://github.com/EduAlexxis/ByeTunes/issues).
 2.  **Join the Community**: Chat with us on [Discord](https://discord.gg/sKeckvz8g).
 3.  **Attach Debug Logs**:
-    *   If you are experiencing injection failures, please use the **Debug Release** provided in the GitHub Releases.
-    *   This version includes a "Debug Logs" screen in Settings where you can copy the app logs.
+    *   If you are experiencing injection failures, please use the **Debug Options** under delte library inside settings.
+    *   This includes a "Debug Logs" screen where you can copy the app logs.
     *   Please attach these logs to your issue report—they help us solve problems much faster!
 
 ---
