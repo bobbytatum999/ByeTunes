@@ -746,7 +746,9 @@ struct SettingsView: View {
             ("/iTunes_Control/iTunes/MediaLibrary.sqlitedb-shm",
              tmp.appendingPathComponent("MediaLibrary.sqlitedb-shm")),
             ("/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal",
-             tmp.appendingPathComponent("MediaLibrary.sqlitedb-wal"))
+             tmp.appendingPathComponent("MediaLibrary.sqlitedb-wal")),
+            ("/iTunes_Control/Ringtones/Ringtones.plist",
+             tmp.appendingPathComponent("Ringtones.plist"))
         ]
 
         var downloaded: [URL] = []

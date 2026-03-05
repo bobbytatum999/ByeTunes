@@ -1706,10 +1706,10 @@ class MediaLibraryBuilder {
                 ) VALUES (
                     \(itemPid), 16384, \(titleSortResult.order), \(titleSortResult.section),
                     0, 0, 0,
-                    0, 27,
+                    0, 26,
                     33003300, 0, 0,
                     0, 0, 0,
-                    0, 0, 27,
+                    0, 0, 26,
                     0, 0, 0,
                     0, 0, 0,
                     3900, 0,
