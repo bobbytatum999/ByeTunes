@@ -8,6 +8,7 @@ struct RingtoneMetadata: Identifiable {
     var name: String
     var remoteFilename: String
     var fileSize: Int = 0
+    var durationMs: Int = 30000
     
     static func fromURL(_ url: URL) -> RingtoneMetadata {
         let name = url.deletingPathExtension().lastPathComponent
@@ -18,7 +19,11 @@ struct RingtoneMetadata: Identifiable {
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attr?[.size] as? Int) ?? 0
         
-        return RingtoneMetadata(url: url, name: name, remoteFilename: remoteName, fileSize: size)
+        let asset = AVURLAsset(url: url)
+        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        let durationMs = durationSeconds.isNaN ? 30000 : Int(durationSeconds * 1000)
+        
+        return RingtoneMetadata(url: url, name: name, remoteFilename: remoteName, fileSize: size, durationMs: durationMs)
     }
 }
 
@@ -300,19 +305,9 @@ struct RingtonesView: View {
         Task {
             for url in urls {
                  
-                 // Since we are using asCopy: true, we don't need security scoped access
-                 
-                 let ext = url.pathExtension.lowercased()
-                 var finalURL: URL?
-                 
-                 if ext == "mp3" {
-                     finalURL = await convertToM4R(url)
-                 } else {
-                     let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
-                     try? FileManager.default.removeItem(at: tempURL)
-                     try? FileManager.default.copyItem(at: url, to: tempURL)
-                     finalURL = tempURL
-                 }
+                 // Since we are using asCopy: true, we don't need security scoped access                 
+                 // Enforce conversion to a perfectly compliant M4A container for ALL ringtone imports
+                 let finalURL = await convertToM4R(url)
                  
                  if let validURL = finalURL {
                      let metadata = RingtoneMetadata.fromURL(validURL)
@@ -339,13 +334,17 @@ struct RingtonesView: View {
         exportSession.outputURL = outputURL
         exportSession.outputFileType = .m4a
         
+        // iOS strictly rejects ringtones longer than 40 seconds.
+        // We crop everything to the first 40 seconds to guarantee it works.
+        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        let maxDuration = 40.0
         
-        
-        
-        
-        
-        
-        
+        if durationSeconds > maxDuration {
+            let start = CMTime(seconds: 0.0, preferredTimescale: 600)
+            let end = CMTime(seconds: maxDuration, preferredTimescale: 600)
+            let timeRange = CMTimeRange(start: start, end: end)
+            exportSession.timeRange = timeRange
+        }
         await exportSession.export()
 
         if exportSession.status == .completed {
@@ -401,7 +400,7 @@ struct RingtonesView: View {
                 album: "Ringtones",
                 genre: "Ringtone",
                 year: 2024,
-                durationMs: 30000,
+                durationMs: ringtone.durationMs,
                 fileSize: ringtone.fileSize,
                 remoteFilename: ringtone.remoteFilename,
                 artworkData: nil
