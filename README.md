@@ -7,7 +7,7 @@ ByeTunes is a native iOS app that lets you inject music (MP3, M4A, FLAC, WAV) an
 ## Features
 
 -   **Direct Music Injection**: Add songs to your Apple Music library without a PC.
--   **Ringtone Manager**: Inject custom ringtones (`.m4r` and `.mp3` auto-conversion).
+-   (DISABLED FOR NOW) **Ringtone Manager**: Inject custom ringtones (`.m4r` and `.mp3` auto-conversion).
 -   **Playlist Support**: Create and manage playlists on the fly.
 -   **No Computer Needed** (after setup): Once paired, you're free!
 -   **Metadata Editing**: Auto-fetched from iTunes or Deezer.
