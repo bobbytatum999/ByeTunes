@@ -12,8 +12,6 @@ struct ContentView: View {
     @State private var showSplash = true
     @State private var showingLogViewer = false
     
-    // Detect "iOS 26" (GlassUI)
-    // Since we can't use #available(iOS 26, *), we check ProcessInfo major version
     // MARK: - iOS 26+ Version Check (GlassUI Support)
     private var isIOS26OrLater: Bool {
         let version = ProcessInfo.processInfo.operatingSystemVersion
@@ -73,6 +71,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            cleanupLegacyImportedAudioFiles()
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 withAnimation(.easeOut(duration: 0.5)) {
@@ -94,25 +93,41 @@ struct ContentView: View {
             handleIncomingFile(url)
         }
     }
+
+    private func cleanupLegacyImportedAudioFiles() {
+        let docs = URL.documentsDirectory
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: docs,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        let audioExts: Set<String> = ["mp3", "m4a", "wav", "aiff", "flac", "m4r"]
+        for fileURL in files {
+            let ext = fileURL.pathExtension.lowercased()
+            guard audioExts.contains(ext) else { continue }
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
     
     
     private func handleIncomingFile(_ url: URL) {
-        print("[ContentView] Received file via Open With: \(url.lastPathComponent)")
+        Logger.shared.log("[ContentView] Received file via Open With: \(url.lastPathComponent)")
         
         
         guard url.startAccessingSecurityScopedResource() else {
-            print("[ContentView] Failed to access security-scoped resource")
+            Logger.shared.log("[ContentView] Failed to access security-scoped resource")
             return
         }
         defer { url.stopAccessingSecurityScopedResource() }
         
         let ext = url.pathExtension.lowercased()
-        
-        
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let destURL = documentsURL.appendingPathComponent(url.lastPathComponent)
+        let destURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("incoming_imports", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
         
         do {
+            try FileManager.default.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destURL.path) {
                 try FileManager.default.removeItem(at: destURL)
             }
@@ -123,7 +138,7 @@ struct ContentView: View {
                 let ringtone = RingtoneMetadata.fromURL(destURL)
                 ringtones.append(ringtone)
                 selectedTab = 1 
-                print("[ContentView] Added ringtone: \(ringtone.name)")
+                Logger.shared.log("[ContentView] Added ringtone: \(ringtone.name)")
                 
                 
                 autoInjectRingtones([ringtone])
@@ -134,7 +149,7 @@ struct ContentView: View {
                         await MainActor.run {
                             songs.append(song)
                             selectedTab = 0 
-                            print("[ContentView] Added song: \(song.title)")
+                            Logger.shared.log("[ContentView] Added song: \(song.title)")
                             
                             
                             autoInjectSongs([song])
@@ -143,7 +158,7 @@ struct ContentView: View {
                 }
             }
         } catch {
-            print("[ContentView] Error copying file: \(error)")
+            Logger.shared.log("[ContentView] Error copying file: \(error)")
         }
     }
     
@@ -151,7 +166,7 @@ struct ContentView: View {
     private func autoInjectSongs(_ songsToInject: [SongMetadata]) {
         guard manager.heartbeatReady else {
             status = "Device not connected"
-            print("[ContentView] Auto-inject skipped: device not connected")
+            Logger.shared.log("[ContentView] Auto-inject skipped: device not connected")
             return
         }
         
@@ -170,6 +185,9 @@ struct ContentView: View {
                     
                     for song in songsToInject {
                         self.songs.removeAll { $0.id == song.id }
+                        if !SongMetadata.shouldPreserveLocalFile(song.localURL) {
+                            try? FileManager.default.removeItem(at: song.localURL)
+                        }
                     }
                 } else {
                     self.status = "Injection failed"
@@ -181,7 +199,7 @@ struct ContentView: View {
     private func autoInjectRingtones(_ ringtonesToInject: [RingtoneMetadata]) {
         guard manager.heartbeatReady else {
             status = "Device not connected"
-            print("[ContentView] Auto-inject skipped: device not connected")
+            Logger.shared.log("[ContentView] Auto-inject skipped: device not connected")
             return
         }
         
@@ -216,6 +234,7 @@ struct ContentView: View {
                     
                     for ringtone in ringtonesToInject {
                         self.ringtones.removeAll { $0.id == ringtone.id }
+                        try? FileManager.default.removeItem(at: ringtone.url)
                     }
                 } else {
                     self.status = "Injection failed"
@@ -267,6 +286,9 @@ struct ContentView: View {
 
 struct FloatingTabBar: View {
     @Binding var selectedTab: Int
+    let showRingtonesTab: Bool
+    private var downloadTabIndex: Int { showRingtonesTab ? 2 : 1 }
+    private var settingsTabIndex: Int { showRingtonesTab ? 3 : 2 }
     
     var body: some View {
         HStack(spacing: 0) {
@@ -282,20 +304,30 @@ struct FloatingTabBar: View {
 
             
             
+            if showRingtonesTab {
+                TabBarButton(
+                    icon: "bell.badge.fill",
+                    title: "Ringtones",
+                    isSelected: selectedTab == 1
+                ) {
+                    selectedTab = 1
+                }
+            }
+
             TabBarButton(
-                icon: "bell.badge.fill",
-                title: "Ringtones",
-                isSelected: selectedTab == 1
+                icon: "arrow.down.circle",
+                title: "Download",
+                isSelected: selectedTab == downloadTabIndex
             ) {
-                selectedTab = 1
+                selectedTab = downloadTabIndex
             }
             
             TabBarButton(
                 icon: "gearshape.fill",
                 title: "Settings",
-                isSelected: selectedTab == 2
+                isSelected: selectedTab == settingsTabIndex
             ) {
-                selectedTab = 2
+                selectedTab = settingsTabIndex
             }
         }
         .padding(.horizontal, 8)

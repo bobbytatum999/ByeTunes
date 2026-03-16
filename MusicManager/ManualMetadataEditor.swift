@@ -15,7 +15,10 @@ struct ManualMetadataEditor: View {
     @State private var isExplicit: Bool = false
     
     @State private var artworkItem: PhotosPickerItem?
+    @State private var originalArtworkData: Data?
     @State private var artworkData: Data?
+    @State private var pendingArtworkData: Data?
+    @State private var showingArtworkCropper = false
     
     @State private var showingSearchSheet = false
     @State private var showingLyricsSearchSheet = false
@@ -65,7 +68,6 @@ struct ManualMetadataEditor: View {
                     Text("Artwork")
                 }
                 
-                // Fetch Metadata button
                 Section {
                     Button {
                         showingSearchSheet = true
@@ -219,21 +221,35 @@ struct ManualMetadataEditor: View {
                 Task {
                     if let data = try? await newItem?.loadTransferable(type: Data.self) {
                         await MainActor.run {
-                            withAnimation {
-                                self.artworkData = data
-                            }
+                            self.pendingArtworkData = data
+                            self.showingArtworkCropper = true
                         }
                     }
                 }
             })
             .sheet(isPresented: $showingSearchSheet, onDismiss: {
-                // Refresh fields from the (possibly updated) song binding
                 loadFieldsFromSong()
             }) {
                 iTunesSearchSheet(song: $song, isPresented: $showingSearchSheet)
             }
             .sheet(isPresented: $showingLyricsSearchSheet) {
                 LyricsSearchSheet(lyrics: $lyrics, isPresented: $showingLyricsSearchSheet, songTitle: title, songArtist: artist)
+            }
+            .sheet(isPresented: $showingArtworkCropper) {
+                if let baseData = pendingArtworkData {
+                    ArtworkCropEditor(imageData: baseData) { croppedData in
+                        self.originalArtworkData = croppedData
+                        self.artworkData = croppedData
+                        self.pendingArtworkData = nil
+                    }
+                } else {
+                    EmptyView()
+                }
+            }
+            .onChange(of: showingArtworkCropper) { isShowing in
+                if !isShowing {
+                    pendingArtworkData = nil
+                }
             }
         }
     }
@@ -249,6 +265,8 @@ struct ManualMetadataEditor: View {
         }
         lyrics = song.lyrics ?? ""
         artworkData = song.artworkData
+        originalArtworkData = song.artworkData
+        pendingArtworkData = nil
         isExplicit = song.explicitRating > 0
     }
     
@@ -275,5 +293,191 @@ struct ManualMetadataEditor: View {
         
         song = updatedSong
         isPresented = false
+    }
+    
+}
+
+private struct ArtworkCropEditor: View {
+    let imageData: Data
+    let onApply: (Data) -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var scale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastScale: CGFloat = 1.0
+    @State private var lastOffset: CGSize = .zero
+    @State private var cropViewportSide: CGFloat = 320
+    private let minScale: CGFloat = 1.0
+    private let maxScale: CGFloat = 6.0
+    
+    var body: some View {
+        NavigationStack {
+            GeometryReader { geo in
+                let side = min(geo.size.width - 56, geo.size.height - 250)
+                ZStack {
+                    Color(uiColor: .systemGroupedBackground)
+                        .ignoresSafeArea()
+
+                    VStack(spacing: 18) {
+                        Spacer(minLength: 12)
+
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                                .frame(width: side + 24, height: side + 24)
+
+                            if let uiImage = UIImage(data: imageData) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .scaleEffect(min(max(scale, minScale), maxScale))
+                                    .offset(offset)
+                                    .frame(width: side, height: side)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 1)
+                                    )
+                                    .gesture(
+                                        SimultaneousGesture(
+                                            MagnificationGesture()
+                                                .onChanged { value in
+                                                    scale = min(max(lastScale * value, minScale), maxScale)
+                                                }
+                                                .onEnded { _ in
+                                                    scale = min(max(scale, minScale), maxScale)
+                                                    lastScale = scale
+                                                    offset = clampedOffset(
+                                                        offset,
+                                                        imageSize: uiImage.size,
+                                                        viewport: side,
+                                                        scale: scale
+                                                    )
+                                                    lastOffset = offset
+                                                },
+                                            DragGesture()
+                                                .onChanged { value in
+                                                    let raw = CGSize(
+                                                        width: lastOffset.width + value.translation.width,
+                                                        height: lastOffset.height + value.translation.height
+                                                    )
+                                                    offset = clampedOffset(
+                                                        raw,
+                                                        imageSize: uiImage.size,
+                                                        viewport: side,
+                                                        scale: scale
+                                                    )
+                                                }
+                                                .onEnded { _ in
+                                                    offset = clampedOffset(
+                                                        offset,
+                                                        imageSize: uiImage.size,
+                                                        viewport: side,
+                                                        scale: max(scale, minScale)
+                                                    )
+                                                    lastOffset = offset
+                                                }
+                                        )
+                                    )
+                                    .onAppear {
+                                        scale = 1.0
+                                        lastScale = 1.0
+                                        offset = .zero
+                                        lastOffset = .zero
+                                    }
+                            }
+                        }
+                        .frame(width: side + 24, height: side + 24)
+
+                        Text("Pinch to zoom and drag to position")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+
+                        Button("Reset") {
+                            scale = 1.0
+                            lastScale = 1.0
+                            offset = .zero
+                            lastOffset = .zero
+                        }
+                        .font(.subheadline.weight(.semibold))
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 22)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear {
+                    cropViewportSide = side
+                }
+                .onChange(of: side) { newValue in
+                    cropViewportSide = newValue
+                }
+            }
+            .navigationTitle("Edit Artwork")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        if let cropped = cropToSquare(
+                            imageData: imageData,
+                            scale: scale,
+                            offset: offset,
+                            viewportSide: cropViewportSide,
+                            outputSide: 1200
+                        ) {
+                            onApply(cropped)
+                        }
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func clampedOffset(_ value: CGSize, imageSize: CGSize, viewport: CGFloat, scale: CGFloat) -> CGSize {
+        guard imageSize.width > 0, imageSize.height > 0 else { return .zero }
+        let fillScale = max(viewport / imageSize.width, viewport / imageSize.height)
+        let displayW = imageSize.width * fillScale * scale
+        let displayH = imageSize.height * fillScale * scale
+        let maxX = max(0, (displayW - viewport) / 2)
+        let maxY = max(0, (displayH - viewport) / 2)
+        
+        return CGSize(
+            width: min(max(value.width, -maxX), maxX),
+            height: min(max(value.height, -maxY), maxY)
+        )
+    }
+    
+    private func cropToSquare(imageData: Data, scale: CGFloat, offset: CGSize, viewportSide: CGFloat, outputSide: CGFloat) -> Data? {
+        guard let image = UIImage(data: imageData) else { return nil }
+        let imgSize = image.size
+        guard imgSize.width > 0, imgSize.height > 0 else { return imageData }
+        
+        let viewport = max(1, viewportSide)
+        let fillScale = max(viewport / imgSize.width, viewport / imgSize.height)
+        let drawW = imgSize.width * fillScale * scale
+        let drawH = imgSize.height * fillScale * scale
+        
+        let drawRect = CGRect(
+            x: (viewport - drawW) / 2 + offset.width,
+            y: (viewport - drawH) / 2 + offset.height,
+            width: drawW,
+            height: drawH
+        )
+        
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: outputSide, height: outputSide), format: format)
+        
+        let rendered = renderer.image { _ in
+            let transform = CGAffineTransform(scaleX: outputSide / viewport, y: outputSide / viewport)
+            image.draw(in: drawRect.applying(transform))
+        }
+        
+        return rendered.jpegData(compressionQuality: 0.95) ?? rendered.pngData()
     }
 }

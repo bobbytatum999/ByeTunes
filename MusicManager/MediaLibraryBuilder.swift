@@ -168,7 +168,6 @@ class MediaLibraryBuilder {
         var errMsg: UnsafeMutablePointer<CChar>?
         sqlite3_exec(db, "PRAGMA journal_mode=DELETE;", nil, nil, &errMsg)
         sqlite3_exec(db, "PRAGMA encoding='UTF-8';", nil, nil, &errMsg)
-        // Apply the correct user_version for the detected iOS version
         sqlite3_exec(db, "PRAGMA user_version = \(version.userVersion);", nil, nil, &errMsg)
         
         
@@ -270,7 +269,6 @@ class MediaLibraryBuilder {
             Logger.shared.log("[MediaLibraryBuilder] WARNING: Database integrity check failed, but continuing...")
         }
         
-        // Ensure base_location 3840 exists (Crucial for Subscription/Cloud libraries that might miss it)
         Logger.shared.log("[MediaLibraryBuilder] Ensuring base_location 3840/3900 exist...")
         try? executeSQL(db, "INSERT OR IGNORE INTO base_location (base_location_id, path) VALUES (3840, 'iTunes_Control/Music/F00')")
         try? executeSQL(db, "INSERT OR IGNORE INTO base_location (base_location_id, path) VALUES (3900, 'iTunes_Control/Ringtones')")
@@ -617,10 +615,8 @@ class MediaLibraryBuilder {
             let albumPid: Int64
             if let existing = albums[song.album] {
                 albumPid = existing.pid
-                // If existing album has a wrong year (or 0) and the song has a more accurate year, mark it for update
                 if (existing.year == 0 || existing.year == 2003 || existing.year != song.year) && song.year != 0 {
                     updateAlbums[song.album] = albumPid
-                    // Update our in-memory lookup too so multiple songs on the same album don't clash
                     albums[song.album] = (pid: albumPid, year: song.year)
                 }
             } else {
@@ -633,14 +629,15 @@ class MediaLibraryBuilder {
             }
             
             
+            let effectiveGenre = SongMetadata.canonicalGenre(song.genre)
             let genreId: Int64
-            if let existing = genres[song.genre] {
+            if let existing = genres[effectiveGenre] {
                 genreId = existing
             } else {
                 let newPid = SongMetadata.generatePersistentId()
-                genres[song.genre] = newPid
-                newGenres[song.genre] = newPid
-                genreRepItem[song.genre] = itemPid  
+                genres[effectiveGenre] = newPid
+                newGenres[effectiveGenre] = newPid
+                genreRepItem[effectiveGenre] = itemPid
                 genreId = newPid
             }
             
@@ -648,7 +645,7 @@ class MediaLibraryBuilder {
             let titleSort = insertSortMap(db: db, name: song.title)
             let artistSort = insertSortMap(db: db, name: song.artist)
             let albumSort = insertSortMap(db: db, name: song.album)
-            let genreSort = insertSortMap(db: db, name: song.genre)
+            let genreSort = insertSortMap(db: db, name: effectiveGenre)
             
              _ = insertSortMap(db: db, name: effectiveAlbumArtistName)
             
@@ -788,10 +785,10 @@ class MediaLibraryBuilder {
                 let fileName = String(hashString.dropFirst(2))
                 let relativePath = "\(folderName)/\(fileName)"
                 
-                print("[MediaLibraryBuilder] ARTWORK (correct algorithm):")
-                print("  -> Token: \(artToken)")
-                print("  -> SHA1(token): \(hashString)")
-                print("  -> relativePath: \(relativePath)")
+                Logger.shared.log("[MediaLibraryBuilder] ARTWORK (correct algorithm):")
+                Logger.shared.log("  -> Token: \(artToken)")
+                Logger.shared.log("  -> SHA1(token): \(hashString)")
+                Logger.shared.log("  -> relativePath: \(relativePath)")
                 
                 
                 collectedArtworkInfo.append(ArtworkInfo(
@@ -1050,7 +1047,6 @@ class MediaLibraryBuilder {
             }
         }
         
-        // Force update existing albums that have wrong metadata
         for (albumName, albumPid) in updateAlbums {
             if let song = songs.first(where: { $0.album == albumName }), song.year != 0 {
                 try executeSQL(db, "UPDATE album SET album_year = \(song.year) WHERE album_pid = \(albumPid)")
@@ -1071,11 +1067,8 @@ class MediaLibraryBuilder {
         }
         
         
-        // Reorder sort_map alphabetically and cascade to item table (permanent fixup)
-        print("[MediaLibraryBuilder] 🔧 SORT FIX: Reordering sort_map alphabetically...")
+        Logger.shared.log("[MediaLibraryBuilder] 🔧 SORT FIX: Reordering sort_map alphabetically...")
         
-        // Step 0: Fix all name_section values in sort_map (recompute from name text, 0-indexed)
-        // Handles accented characters (À-Å→A, Ç→C, È-Ë→E, Ì-Ï→I, Ñ→N, Ò-Ö→O, Ù-Ü→U, Ý→Y)
         try? executeSQL(db, """
             UPDATE sort_map SET name_section = 
                 CASE 
@@ -1093,7 +1086,6 @@ class MediaLibraryBuilder {
                 END
         """)
         
-        // Step 1: Create temp table with correct alphabetical ordering
         try? executeSQL(db, "DROP TABLE IF EXISTS _sort_reorder")
         try? executeSQL(db, """
             CREATE TEMP TABLE _sort_reorder AS
@@ -1105,7 +1097,6 @@ class MediaLibraryBuilder {
             FROM sort_map
         """)
         
-        // Step 2: Update item table — remap all _order columns and set correct _order_section
         try? executeSQL(db, """
             UPDATE item SET
                 title_order = COALESCE((SELECT new_order FROM _sort_reorder WHERE old_order = item.title_order), title_order),
@@ -1120,14 +1111,12 @@ class MediaLibraryBuilder {
                 genre_order_section = COALESCE((SELECT name_section FROM _sort_reorder WHERE old_order = item.genre_order), genre_order_section)
         """)
         
-        // Step 3: Update sort_map itself
         try? executeSQL(db, """
             UPDATE sort_map SET name_order = (
                 SELECT new_order FROM _sort_reorder WHERE _sort_reorder.name = sort_map.name
             )
         """)
         
-        // Step 4: Update item_search to match new orders
         try? executeSQL(db, """
             UPDATE item_search SET
                 search_title = (SELECT title_order FROM item WHERE item.item_pid = item_search.item_pid),
@@ -1137,9 +1126,9 @@ class MediaLibraryBuilder {
         """)
         
         try? executeSQL(db, "DROP TABLE IF EXISTS _sort_reorder")
-        print("[MediaLibraryBuilder] ✅ Sort reorder complete")
+        Logger.shared.log("[MediaLibraryBuilder] ✅ Sort reorder complete")
         
-        print("[MediaLibraryBuilder] Fixing existing records without sync_id...")
+        Logger.shared.log("[MediaLibraryBuilder] Fixing existing records without sync_id...")
         
         
         try executeSQL(db, """
@@ -1156,7 +1145,7 @@ class MediaLibraryBuilder {
             UPDATE item_artist SET sync_id = abs(random()), keep_local = 1 WHERE sync_id = 0
         """)
         
-        print("[MediaLibraryBuilder] Merged \(songs.count) new songs, \(collectedArtworkInfo.count) with artwork")
+        Logger.shared.log("[MediaLibraryBuilder] Merged \(songs.count) new songs, \(collectedArtworkInfo.count) with artwork")
         return (insertedPids, collectedArtworkInfo)
     }
     
@@ -1610,8 +1599,6 @@ class MediaLibraryBuilder {
     
     
     
-    /// Opens an existing database, inserts ringtone rows, and returns the modified DB URL.
-    /// Used for iOS 18 and under where ringtones need database entries to show in Settings.
     static func addRingtonesToExistingDatabase(
         existingDbData: Data,
         walData: Data? = nil,
@@ -1640,21 +1627,18 @@ class MediaLibraryBuilder {
         }
         defer { sqlite3_close(db) }
         
-        // Checkpoint WAL if present
         if walData != nil {
             var errorMsg: UnsafeMutablePointer<CChar>?
             sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, &errorMsg)
             if let msg = errorMsg { sqlite3_free(msg) }
         }
         
-        // Switch to DELETE journal mode for clean upload
         sqlite3_exec(db, "PRAGMA journal_mode=DELETE", nil, nil, nil)
         
         try insertRingtones(db: db, ringtones: ringtones)
         
         Logger.shared.log("[MediaLibraryBuilder] Ringtone DB entries inserted for \(ringtones.count) ringtones")
         
-        // Clean up WAL/SHM leftovers
         try? FileManager.default.removeItem(at: tempDir.appendingPathComponent("RingtoneDB.sqlitedb-wal"))
         try? FileManager.default.removeItem(at: tempDir.appendingPathComponent("RingtoneDB.sqlitedb-shm"))
         
@@ -1789,6 +1773,5 @@ class MediaLibraryBuilder {
         return exists
     }
 }
-
 
 

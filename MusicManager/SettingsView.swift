@@ -8,11 +8,14 @@ struct SettingsView: View {
     @State private var showingPairingPicker = false
     @State private var showingDeleteAlert = false
     
-    // Debug
     @State private var showingLogViewer = false
     @State private var exportedDbURLs: [URL] = []
     @State private var showingDbExportSheet = false
     @State private var isExportingDb = false
+    @State private var isSnapshotBusy = false
+    @State private var isCreatingSnapshot = false
+    @State private var isRestoringSnapshot = false
+    @State private var snapshots: [DeviceManager.DatabaseSnapshotInfo] = []
     
     @State private var showToast = false
     @State private var toastTitle = ""
@@ -23,6 +26,7 @@ struct SettingsView: View {
     @AppStorage("fetchLyrics") private var fetchLyrics = false
     @AppStorage("storeRegion") private var storeRegion = "US"
     @AppStorage("appleRichMetadata") private var appleRichMetadata = true
+    @AppStorage("keepDownloadedSongs") private var keepDownloadedSongs = false
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -181,7 +185,7 @@ struct SettingsView: View {
                             
                             Spacer()
                             
-                            Text("M4R, MP3")
+                            Text("M4R, MP3 (Ringtones injection disabled for now")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -340,6 +344,42 @@ struct SettingsView: View {
                 }
                 
                 
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("DOWNLOADS")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                        .tracking(0.5)
+
+                    VStack(spacing: 0) {
+                        Toggle(isOn: $keepDownloadedSongs) {
+                            HStack {
+                                Image(systemName: "square.and.arrow.down.on.square")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                    .frame(width: 28)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Keep Downloaded Songs")
+                                        .font(.body)
+                                    Text("Store downloaded tracks in app Documents folder")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+                    }
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color(.systemGray5), lineWidth: 1)
+                    )
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
                     Text("SHORTCUTS")
                         .font(.caption)
@@ -604,6 +644,109 @@ struct SettingsView: View {
                 }
                 
                 
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("BACKUP & RESTORE")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                        .tracking(0.5)
+                    
+                    VStack(spacing: 0) {
+                        Button {
+                            createSnapshotBackup()
+                        } label: {
+                            HStack {
+                                if isCreatingSnapshot {
+                                    ProgressView()
+                                        .frame(width: 28)
+                                } else {
+                                    Image(systemName: "externaldrive.badge.plus")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .frame(width: 28)
+                                }
+                                
+                                Text(isCreatingSnapshot ? "Working…" : "Create Snapshot/Backup")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                            }
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 16)
+                        }
+                        .disabled(isSnapshotBusy || !manager.heartbeatReady)
+                        
+                        Divider().padding(.leading, 56)
+                        
+                        Button {
+                            restoreSnapshotBackup()
+                        } label: {
+                            HStack {
+                                if isRestoringSnapshot {
+                                    ProgressView()
+                                        .frame(width: 28)
+                                } else {
+                                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .frame(width: 28)
+                                }
+                                
+                                Text(isRestoringSnapshot ? "Working…" : "Restore Snapshot/Backup")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                            }
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 16)
+                        }
+                        .disabled(isSnapshotBusy || !manager.heartbeatReady)
+                        
+                        Divider().padding(.leading, 56)
+                        
+                        HStack {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.body)
+                                .foregroundColor(.primary)
+                                .frame(width: 28)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Last Backup")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                
+                                if let latest = snapshots.first {
+                                    Text("\(latest.songCount) songs • \(formatSnapshotDate(latest.createdAt))")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    Text("No backup yet")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            
+                            Spacer()
+                        }
+                        .padding(.vertical, 14)
+                        .padding(.horizontal, 16)
+                    }
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color(.systemGray5), lineWidth: 1)
+                    )
+                    
+                    Text("Snapshot stores MediaLibrary DB files locally in app storage. Restore loads the latest snapshot.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                }
+                
+                
                 // ── DEBUG ──────────────────────────────────────────────────
                 VStack(alignment: .leading, spacing: 12) {
                     Text("DEBUG")
@@ -614,7 +757,6 @@ struct SettingsView: View {
                     
                     VStack(spacing: 0) {
                         
-                        // Console
                         Button {
                             showingLogViewer = true
                         } label: {
@@ -640,7 +782,6 @@ struct SettingsView: View {
                         
                         Divider().padding(.leading, 56)
                         
-                        // Export Database
                         Button {
                             exportDatabase()
                         } label: {
@@ -709,6 +850,9 @@ struct SettingsView: View {
             }
         } message: {
             Text("This will permanently delete your Music library database and playlists from the device. This action cannot be undone.")
+        }
+        .onAppear {
+            refreshSnapshots()
         }
             
         if showToast {
@@ -779,6 +923,87 @@ struct SettingsView: View {
         downloadNext(0)
     }
     
+    private func createSnapshotBackup() {
+        isSnapshotBusy = true
+        isCreatingSnapshot = true
+        isRestoringSnapshot = false
+        manager.createDatabaseSnapshot { success, message in
+            DispatchQueue.main.async {
+                self.isSnapshotBusy = false
+                self.isCreatingSnapshot = false
+                self.showToastMessage(
+                    title: success ? message : "Backup Failed: \(message)",
+                    icon: success ? "checkmark.circle.fill" : "xmark.circle.fill"
+                )
+                self.refreshSnapshots()
+            }
+        }
+    }
+    
+    private func restoreSnapshotBackup() {
+        isSnapshotBusy = true
+        isCreatingSnapshot = false
+        isRestoringSnapshot = true
+        manager.restoreLatestDatabaseSnapshot { success, message in
+            DispatchQueue.main.async {
+                self.isSnapshotBusy = false
+                self.isRestoringSnapshot = false
+                self.showToastMessage(
+                    title: success ? message : "Restore Failed: \(message)",
+                    icon: success ? "arrow.counterclockwise.circle.fill" : "xmark.circle.fill"
+                )
+                self.refreshSnapshots()
+            }
+        }
+    }
+    
+    private func restoreSnapshot(named folderName: String) {
+        isSnapshotBusy = true
+        isCreatingSnapshot = false
+        isRestoringSnapshot = true
+        manager.restoreDatabaseSnapshot(named: folderName) { success, message in
+            DispatchQueue.main.async {
+                self.isSnapshotBusy = false
+                self.isRestoringSnapshot = false
+                self.showToastMessage(
+                    title: success ? message : "Restore Failed: \(message)",
+                    icon: success ? "arrow.counterclockwise.circle.fill" : "xmark.circle.fill"
+                )
+            }
+        }
+    }
+    
+    private func deleteSnapshot(named folderName: String) {
+        isSnapshotBusy = true
+        isCreatingSnapshot = false
+        isRestoringSnapshot = false
+        manager.deleteDatabaseSnapshot(named: folderName) { success, message in
+            DispatchQueue.main.async {
+                self.isSnapshotBusy = false
+                self.showToastMessage(
+                    title: success ? message : "Delete Failed: \(message)",
+                    icon: success ? "trash.circle.fill" : "xmark.circle.fill"
+                )
+                self.refreshSnapshots()
+            }
+        }
+    }
+    
+    private func refreshSnapshots() {
+        manager.fetchDatabaseSnapshots { list in
+            DispatchQueue.main.async {
+                self.snapshots = list
+            }
+        }
+    }
+    
+    private func formatSnapshotDate(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
+    
     private func showToastMessage(title: String, icon: String) {
         withAnimation(.spring()) {
             self.toastTitle = title
@@ -821,4 +1046,4 @@ struct SettingsView: View {
             status = "Import failed"
         }
     }
-} // <--- DO NOT DELETE THIS BRACE. It closes the SettingsView struct.
+}

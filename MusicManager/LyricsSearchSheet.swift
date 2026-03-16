@@ -17,7 +17,6 @@ struct LyricsSearchSheet: View {
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Premium Header
                 HStack(alignment: .lastTextBaseline) {
                     Text("Select Lyrics")
                         .font(.system(size: 24, weight: .bold))
@@ -46,7 +45,6 @@ struct LyricsSearchSheet: View {
                 .padding([.top, .horizontal], 20)
                 .padding(.bottom, 10)
                 
-                // Search Bar
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
@@ -159,7 +157,6 @@ struct LyricsRow: View {
     
     var body: some View {
         HStack(spacing: 14) {
-            // Placeholder / Icon
             ZStack {
                 Color(uiColor: .systemGray6)
                 Image(systemName: "text.quote")

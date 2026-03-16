@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 
 
 struct SongMetadata: Identifiable {
@@ -16,6 +17,7 @@ struct SongMetadata: Identifiable {
     var fileSize: Int
     var remoteFilename: String
     var artworkData: Data?
+    var artworkPreviewData: Data? = nil
     
     var trackNumber: Int?
     var trackCount: Int?
@@ -23,7 +25,6 @@ struct SongMetadata: Identifiable {
     var discCount: Int?
     var lyrics: String?
     
-    // M4A Apple Music Canonical IDs (iOS 26+)
     var storeId: Int64 = 0
     var storefrontId: Int64 = 0
     var artistId: Int64 = 0
@@ -35,7 +36,6 @@ struct SongMetadata: Identifiable {
     var xid: String?
     var releaseDate: Int = 0
     
-    // UI Badging
     var richAppleMetadataFetched: Bool = false
     
     
@@ -55,6 +55,14 @@ struct SongMetadata: Identifiable {
     static func generatePersistentId() -> Int64 {
         return Int64.random(in: 1_000_000_000_000_000_000...Int64.max)
     }
+
+    static func shouldPreserveLocalFile(_ url: URL) -> Bool {
+        guard UserDefaults.standard.bool(forKey: "keepDownloadedSongs") else { return false }
+        let persistentDirectory = URL.documentsDirectory.appendingPathComponent("Downloaded Songs", isDirectory: true)
+        let standardizedFilePath = url.standardizedFileURL.path
+        let standardizedDirectoryPath = persistentDirectory.standardizedFileURL.path + "/"
+        return standardizedFilePath.hasPrefix(standardizedDirectoryPath)
+    }
     
     
     static func generateGroupingKey(_ text: String) -> Data {
@@ -72,9 +80,30 @@ struct SongMetadata: Identifiable {
         }
         return Data(result)
     }
+    
+    static func canonicalGenre(_ raw: String?) -> String {
+        guard let raw else { return "Music" }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Music" }
+        
+        let lowered = trimmed.lowercased()
+        let unknownSet: Set<String> = [
+            "unknown",
+            "unknown genre",
+            "n/a",
+            "na",
+            "none",
+            "null",
+            "(null)"
+        ]
+        if unknownSet.contains(lowered) {
+            return "Music"
+        }
+        return trimmed
+    }
 
     
-    static func fromURL(_ url: URL) async throws -> SongMetadata {
+    static func fromURL(_ url: URL, includeArtwork: Bool = true) async throws -> SongMetadata {
         let asset = AVURLAsset(url: url)
         
         
@@ -90,7 +119,7 @@ struct SongMetadata: Identifiable {
         var artist = "Unknown Artist"
         var album = "Unknown Album"
         var albumArtist: String?
-        var genre = "Unknown Genre"
+        var genre = "Music"
         var year = Calendar.current.component(.year, from: Date())
         var artworkData: Data?
         
@@ -100,7 +129,6 @@ struct SongMetadata: Identifiable {
         var discCount: Int?
         var lyrics: String?
         
-        // M4A Apple Music fields
         let isM4A = url.pathExtension.lowercased() == "m4a"
         var storeId: Int64 = 0
         var storefrontId: Int64 = 0
@@ -144,9 +172,9 @@ struct SongMetadata: Identifiable {
                     year = extracted
                 }
             case .commonKeyArtwork:
-                if let data = try? await item.load(.dataValue) {
+                if includeArtwork, let data = try? await item.load(.dataValue) {
                     artworkData = data
-                    print("[SongMetadata] Extracted artwork: \(data.count) bytes")
+                    Logger.shared.log("[SongMetadata] Extracted artwork: \(data.count) bytes")
                 }
             default: break
             }
@@ -170,7 +198,6 @@ struct SongMetadata: Identifiable {
             let identifier = item.identifier?.rawValue ?? ""
             let combined = "\(identifier)|\(keyString)".uppercased()
             
-            // M4A Apple Music atom extraction
             if isM4A {
                 let id = identifier
                 let isAppleKey = id.contains("rtng") || id.contains("geID") || id.contains("sfID") || id.contains("atID") || id.contains("cmID") || id.contains("plID") || id.contains("cnID") || id.contains("cprt") || id.contains("xid")
@@ -187,7 +214,6 @@ struct SongMetadata: Identifiable {
                         if id.contains("cprt") { copyright = val }
                         if id.contains("xid") { xid = val }
                     } else if let data = try? await item.load(.dataValue) {
-                        // Some Apple atoms store values as binary integers
                         if id.contains("rtng") && data.count >= 1 { explicitRating = Int(data[0]) }
                         if data.count >= 4 {
                             let intVal = data.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
@@ -202,13 +228,11 @@ struct SongMetadata: Identifiable {
                     }
                 }
                 
-                // ©day release date parsing for M4A (Apple Mac Epoch Time)
                 if keyString == "\u{00A9}day" {
                     if let val = try? await item.load(.stringValue), !val.isEmpty {
                         let df = DateFormatter()
                         df.locale = Locale(identifier: "en_US_POSIX")
                         
-                        // Try multiple date formats Apple M4A files can use
                         let formats = [
                             "yyyy-MM-dd'T'HH:mm:ssZ",
                             "yyyy-MM-dd'T'HH:mm:ss",
@@ -220,15 +244,14 @@ struct SongMetadata: Identifiable {
                             df.dateFormat = fmt
                             if let date = df.date(from: val) {
                                 releaseDate = Int(date.timeIntervalSinceReferenceDate)
-                                print("[SongMetadata] M4A release date: \(val) -> epoch \(releaseDate)")
+                                Logger.shared.log("[SongMetadata] M4A release date: \(val) -> epoch \(releaseDate)")
                                 break
                             }
                         }
                         
-                        // Always extract year from ©day for M4A (overrides any wrong commonKeyCreationDate)
                         if let extracted = extractYear(from: val) {
                             year = extracted
-                            print("[SongMetadata] M4A year from ©day: \(year)")
+                            Logger.shared.log("[SongMetadata] M4A year from ©day: \(year)")
                         }
                     }
                 }
@@ -272,35 +295,35 @@ struct SongMetadata: Identifiable {
             }
 
             
-            if artworkData == nil {
+            if includeArtwork && artworkData == nil {
                 
                 if combined.contains("ARTWORK") || combined.contains("PICTURE") || combined.contains("APIC") || combined.contains("COVR") {
                     if let data = try? await item.load(.dataValue), !data.isEmpty {
                         artworkData = data
-                        print("[SongMetadata] Deep Scan extracted artwork: \(data.count) bytes (Key: \(combined))")
+                        Logger.shared.log("[SongMetadata] Deep Scan extracted artwork: \(data.count) bytes (Key: \(combined))")
                     }
                 }
             }
 
             
             if let val = try? await item.load(.stringValue), !val.isEmpty {
-                if keyString == "\u{00A9}gen" || keyString == "gnre" { 
-                     if genre == "Unknown Genre" { genre = val }
+                if keyString == "\u{00A9}gen" || keyString == "gnre" {
+                     if genre == "Music" { genre = val }
                 }
                 
                 if (combined.contains("TITLE") || combined.contains("NAM")) && title == filenameWithoutExt { title = val }
                 if (combined.contains("ARTIST") || combined.contains("PERFORMER")) && !combined.contains("ALBUMARTIST") && artist == "Unknown Artist" { artist = val }
                 if combined.contains("ALBUM") && !combined.contains("ALBUMARTIST") && album == "Unknown Album" { album = val }
-                if (combined.contains("GENRE") || combined.contains("GEN")) && genre == "Unknown Genre" { genre = val }
+                if (combined.contains("GENRE") || combined.contains("GEN")) && genre == "Music" { genre = val }
                 
                 
                 if (combined.contains("ALBUMARTIST") || combined.contains("TPE2") || combined.contains("AART")) {
                    let trimmed = val.trimmingCharacters(in: .whitespacesAndNewlines)
                    if !trimmed.isEmpty && trimmed.lowercased() != "unknown artist" {
                        albumArtist = trimmed
-                       print("[SongMetadata] Extracted Album Artist: \(trimmed) from key: \(combined)")
+                       Logger.shared.log("[SongMetadata] Extracted Album Artist: \(trimmed) from key: \(combined)")
                    } else {
-                       print("[SongMetadata] Ignored invalid Album Artist: '\(val)'")
+                       Logger.shared.log("[SongMetadata] Ignored invalid Album Artist: '\(val)'")
                    }
                 }
 
@@ -309,21 +332,19 @@ struct SongMetadata: Identifiable {
                     if combined.contains("DATE") || combined.contains("YEAR") || combined.contains("TYER") || combined.contains("TDRC") || combined.contains("DAY") {
                         if let extracted = extractYear(from: val) {
                             year = extracted
-                            print("[SongMetadata] Extracted year: \(year) from key: \(combined) (Val: \(val))")
+                            Logger.shared.log("[SongMetadata] Extracted year: \(year) from key: \(combined) (Val: \(val))")
                         }
                     }
                 }
                 
-                // Lyrics Extraction
                 if lyrics == nil {
                     if combined.contains("USLT") || combined.contains("LYRICS") || combined.contains("UNSYNC") || keyString == "\u{00A9}lyr" {
                          lyrics = SongMetadata.cleanLyrics(val, title: title, artist: artist)
-                         print("[SongMetadata] Extracted and cleaned lyrics from key: \(combined)")
+                         Logger.shared.log("[SongMetadata] Extracted and cleaned lyrics from key: \(combined)")
                     }
                 }
             }
             
-            // Handle binary data for atoms like trkn/disk if string failed
             if trackNumber == nil {
                 if keyString == "trkn" || combined.contains("TRKN") {
                     if let data = try? await item.load(.dataValue), data.count >= 8 {
@@ -331,7 +352,7 @@ struct SongMetadata: Identifiable {
                          let total = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self).bigEndian }
                          if track > 0 { trackNumber = Int(track) }
                          if total > 0 { trackCount = Int(total) }
-                         print("[SongMetadata] Extracted Track via Data: \(trackNumber ?? 0)/\(trackCount ?? 0)")
+                         Logger.shared.log("[SongMetadata] Extracted Track via Data: \(trackNumber ?? 0)/\(trackCount ?? 0)")
                     }
                 }
             }
@@ -342,7 +363,7 @@ struct SongMetadata: Identifiable {
                          let total = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self).bigEndian }
                          if disc > 0 { discNumber = Int(disc) }
                          if total > 0 { discCount = Int(total) }
-                         print("[SongMetadata] Extracted Disc via Data: \(discNumber ?? 0)/\(discCount ?? 0)")
+                         Logger.shared.log("[SongMetadata] Extracted Disc via Data: \(discNumber ?? 0)/\(discCount ?? 0)")
                     }
                 }
             }
@@ -352,59 +373,52 @@ struct SongMetadata: Identifiable {
         if let aa = albumArtist, (aa.isEmpty || aa.lowercased() == "unknown artist") {
             albumArtist = nil
         }
+        
+        genre = canonicalGenre(genre)
 
-        // Fallback: If title extraction failed or is still just the filename, try parsing the filename
         if title == filenameWithoutExt && filenameWithoutExt.contains(" - ") {
              let parts = filenameWithoutExt.components(separatedBy: " - ")
              
-             // Check for "01 - Artist - Title" format (3 parts)
              if parts.count >= 3 {
-                 // Check if first part is a number (Track Number)
                  if let trackNum = Int(parts[0]) {
                      trackNumber = trackNum
                      artist = parts[1].trimmingCharacters(in: .whitespaces)
                      title = parts[2].trimmingCharacters(in: .whitespaces)
-                     print("[SongMetadata] Parsed filename (Track - Artist - Title): \(filenameWithoutExt)")
+                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Artist - Title): \(filenameWithoutExt)")
                  } else {
-                     // Fallback for "Artist - Album - Title" or similar?
-                     // For now, assume standard "Artist - Title" if 3 parts but first isn't number
                      artist = parts[0].trimmingCharacters(in: .whitespaces)
                      title = parts[1].trimmingCharacters(in: .whitespaces)
                  }
              }
-             // Check for "Artist - Title" or "01 - Title" format (2 parts)
              else if parts.count == 2 {
-                 // If first part is a number, treat as "Track - Title"
                  if let trackNum = Int(parts[0]) {
                      trackNumber = trackNum
                      title = parts[1].trimmingCharacters(in: .whitespaces)
-                     print("[SongMetadata] Parsed filename (Track - Title): \(filenameWithoutExt)")
+                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Title): \(filenameWithoutExt)")
                  } else {
                      let p1 = parts[0].trimmingCharacters(in: .whitespaces)
                      let p2 = parts[1].trimmingCharacters(in: .whitespaces)
                      
-                     // Heuristic: If part 2 contains ", " or "feat" and part 1 doesn't, assume Title - Artist
                      let p2LooksLikeArtist = p2.contains(",") || p2.lowercased().contains("feat")
                      let p1LooksLikeArtist = p1.contains(",") || p1.lowercased().contains("feat")
                      
                      if p2LooksLikeArtist && !p1LooksLikeArtist {
                          title = p1
                          artist = p2
-                         print("[SongMetadata] Parsed filename (Title - Artist) [Heuristic]: \(filenameWithoutExt)")
+                         Logger.shared.log("[SongMetadata] Parsed filename (Title - Artist) [Heuristic]: \(filenameWithoutExt)")
                      } else {
-                         // Default: Artist - Title
                          artist = p1
                          title = p2
-                         print("[SongMetadata] Parsed filename (Artist - Title): \(filenameWithoutExt)")
+                         Logger.shared.log("[SongMetadata] Parsed filename (Artist - Title): \(filenameWithoutExt)")
                      }
                  }
              }
         }
         
-        print("[SongMetadata] Final: title=\(title), artist=\(artist), album=\(album), track=\(trackNumber ?? 0)/\(trackCount ?? 0)")
+        Logger.shared.log("[SongMetadata] Final: title=\(title), artist=\(artist), album=\(album), track=\(trackNumber ?? 0)/\(trackCount ?? 0)")
         
         if isM4A && (storeId > 0 || storefrontId > 0) {
-            print("[SongMetadata] M4A Apple IDs: storeId=\(storeId), sfID=\(storefrontId), atID=\(artistId), cmID=\(composerId), plID=\(playlistId), geID=\(genreStoreId), rtng=\(explicitRating)")
+            Logger.shared.log("[SongMetadata] M4A Apple IDs: storeId=\(storeId), sfID=\(storefrontId), atID=\(artistId), cmID=\(composerId), plID=\(playlistId), geID=\(genreStoreId), rtng=\(explicitRating)")
         }
         
         return SongMetadata(
@@ -435,6 +449,65 @@ struct SongMetadata: Identifiable {
             xid: xid,
             releaseDate: releaseDate
         )
+    }
+
+    static func extractEmbeddedArtwork(from url: URL) async -> Data? {
+        let asset = AVURLAsset(url: url)
+
+        if let commonMetadata = try? await asset.load(.commonMetadata) {
+            for item in commonMetadata {
+                guard item.commonKey == .commonKeyArtwork else { continue }
+                if let data = try? await item.load(.dataValue), !data.isEmpty {
+                    return data
+                }
+            }
+        }
+
+        if let allMetadata = try? await asset.load(.metadata) {
+            for item in allMetadata {
+                var keyString = ""
+                if let strKey = item.key as? String {
+                    keyString = strKey
+                } else if let intKey = item.key as? Int {
+                    keyString = "\(intKey)"
+                }
+
+                let identifier = item.identifier?.rawValue ?? ""
+                let combined = "\(identifier)|\(keyString)".uppercased()
+                if combined.contains("ARTWORK") || combined.contains("PICTURE") || combined.contains("APIC") || combined.contains("COVR") {
+                    if let data = try? await item.load(.dataValue), !data.isEmpty {
+                        return data
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func extractEmbeddedArtworkThumbnail(from url: URL, maxDimension: CGFloat = 120) async -> Data? {
+        guard let fullData = await extractEmbeddedArtwork(from: url) else { return nil }
+        return createArtworkThumbnailData(from: fullData, maxDimension: maxDimension)
+    }
+
+    private static func createArtworkThumbnailData(from data: Data, maxDimension: CGFloat) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+
+        let size = image.size
+        let largestDimension = max(size.width, size.height)
+        let scale = largestDimension > maxDimension ? (maxDimension / largestDimension) : 1
+        let targetSize = CGSize(
+            width: max(size.width * scale, 1),
+            height: max(size.height * scale, 1)
+        )
+
+        let rendererFormat = UIGraphicsImageRendererFormat.default()
+        rendererFormat.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: rendererFormat)
+        let rendered = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        return rendered.jpegData(compressionQuality: 0.72)
     }
     
     
@@ -467,23 +540,17 @@ struct SongMetadata: Identifiable {
     }
     
     static func cleanLyrics(_ rawLyrics: String, title: String? = nil, artist: String? = nil) -> String {
-        // 1. Remove metadata headers like [ti:Title], [ar:Artist], etc.
         var cleaned = rawLyrics.replacingOccurrences(of: #"\[([a-z]+):.*\]"#, with: "", options: [.regularExpression, .caseInsensitive])
         
-        // 2. Remove timestamps like [00:21.26] or [00:21]
         cleaned = cleaned.replacingOccurrences(of: #"\[\d{2,}:\d{2}(\.\d{2,})?\]"#, with: "", options: .regularExpression)
         
-        // 3. Genius-specific artifact removal (Generic)
         cleaned = cleaned.replacingOccurrences(of: #"\d+\s+Contributors"#, with: "", options: .regularExpression)
         
-        // 4. Remove all content inside square brackets [...] completely
         cleaned = cleaned.replacingOccurrences(of: #"\[[^\]]+\]"#, with: "", options: .regularExpression)
 
-        // 5. Clean up extra whitespace/newlines While identifying and removing headers
         let lines = cleaned.components(separatedBy: .newlines)
         var resultLines: [String] = []
         
-        // Define common noise words for headers
         let noiseWords = ["lyrics", "letra", "contributors", "official", "video", "audio"]
         
         for line in lines {
@@ -495,7 +562,6 @@ struct SongMetadata: Identifiable {
                 continue
             }
             
-            // Smart Header Check: If line contains the title and only noise words/whitespace
             if let title = title {
                 let lowLine = trimmed.lowercased()
                 let lowTitle = title.lowercased()
@@ -505,7 +571,6 @@ struct SongMetadata: Identifiable {
                 }
                 
                 if lowLine.contains(lowTitle) {
-                    // Check if the rest of the line is just noise
                     var remainder = lowLine.replacingOccurrences(of: lowTitle, with: "")
                     for noise in noiseWords {
                         remainder = remainder.replacingOccurrences(of: noise, with: "")
@@ -540,15 +605,14 @@ struct SongMetadata: Identifiable {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            // Prefer plainLyrics for better cleaning, or use syncedLyrics if plain is missing
             let lyrics = (json?["plainLyrics"] as? String) ?? (json?["syncedLyrics"] as? String)
             
             if let l = lyrics, !l.isEmpty {
-                print("[SongMetadata] Successfully fetched lyrics from LRCLIB")
+                Logger.shared.log("[SongMetadata] Successfully fetched lyrics from LRCLIB")
                 return SongMetadata.cleanLyrics(l, title: title, artist: artist)
             }
         } catch {
-            print("[SongMetadata] LRCLIB fetch failed: \(error)")
+            Logger.shared.log("[SongMetadata] LRCLIB fetch failed: \(error)")
         }
         return nil
     }
@@ -578,7 +642,7 @@ extension SongMetadata {
             let results = try JSONDecoder().decode([LRCLIBResult].self, from: data)
             return results
         } catch {
-            print("[SongMetadata] LRCLIB search failed: \(error)")
+            Logger.shared.log("[SongMetadata] LRCLIB search failed: \(error)")
             return []
         }
     }
@@ -590,13 +654,20 @@ extension SongMetadata {
         enrichedSong.title = amsMatch.attributes.name
         enrichedSong.artist = amsMatch.attributes.artistName
         if let alb = amsMatch.attributes.albumName { enrichedSong.album = alb }
+        if let trackNumber = amsMatch.attributes.trackNumber {
+            enrichedSong.trackNumber = trackNumber
+        }
+        if let discNumber = amsMatch.attributes.discNumber {
+            enrichedSong.discNumber = discNumber
+        }
+        if let durationInMillis = amsMatch.attributes.durationInMillis, durationInMillis > 0 {
+            enrichedSong.durationMs = durationInMillis
+        }
         
-        // 1. Store ID (Track ID)
         if let songIdInt = Int64(amsMatch.id) {
             enrichedSong.storeId = songIdInt
         }
         
-        // 2. Year & Release Date
         if let dateStr = amsMatch.attributes.releaseDate {
             if let yearInt = Int(dateStr.prefix(4)) {
                 enrichedSong.year = yearInt
@@ -614,47 +685,43 @@ extension SongMetadata {
             }
         }
         
-        // 3. XID (ISRC)
         if let isrc = amsMatch.attributes.isrc, !isrc.isEmpty {
             enrichedSong.xid = isrc
         }
         
-        // 4. Explicit Flag
         if let rating = amsMatch.attributes.contentRating {
             enrichedSong.explicitRating = (rating == "explicit") ? 1 : (rating == "clean" ? 2 : 0)
         }
         
-        // 4. Copyright
         if let firstAlbum = amsMatch.relationships?.albums?.data.first,
            let cprt = firstAlbum.attributes.copyright {
             enrichedSong.copyright = cprt
         }
         
-        // 5. Artist ID
         if let firstArtist = amsMatch.relationships?.artists?.data.first,
            let artistIdInt = Int64(firstArtist.id) {
             enrichedSong.artistId = artistIdInt
         }
         
-        // 6. Composer ID
         if let firstComposer = amsMatch.relationships?.composers?.data.first,
            let composerIdInt = Int64(firstComposer.id) {
             enrichedSong.composerId = composerIdInt
         }
         
-        // 7. Genre Store ID
         if let firstGenre = amsMatch.relationships?.genres?.data.first,
            let genreIdInt = Int64(firstGenre.id) {
             enrichedSong.genreStoreId = genreIdInt
         }
         
-        // 8. Playlist/Album ID (plID)
+        if let firstGenreName = amsMatch.attributes.genreNames?.first {
+            enrichedSong.genre = canonicalGenre(firstGenreName)
+        }
+        
         if let firstAlbum = amsMatch.relationships?.albums?.data.first,
            let albumIdInt = Int64(firstAlbum.id) {
             enrichedSong.playlistId = albumIdInt
         }
         
-        // 9. Storefront ID (sfID)
         let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
         let storefrontMap: [String: Int64] = [
             "us": 143441, "gb": 143444, "ca": 143455, "au": 143460,
@@ -679,13 +746,13 @@ extension SongMetadata {
         ]
         enrichedSong.storefrontId = storefrontMap[region] ?? 143441
         
-        // 10. Fetch Artwork
         if let artworkUrl = amsMatch.attributes.artwork?.artworkURL() {
             if let (data, _) = try? await URLSession.shared.data(from: artworkUrl) {
                 enrichedSong.artworkData = data
             }
         }
         
+        enrichedSong.genre = canonicalGenre(enrichedSong.genre)
         enrichedSong.richAppleMetadataFetched = true
         return enrichedSong
     }
@@ -729,7 +796,7 @@ extension SongMetadata {
             let result = try JSONDecoder().decode(iTunesSearchResult.self, from: data)
             return result.results
         } catch {
-            print("[SongMetadata] iTunes search failed: \(error)")
+            Logger.shared.log("[SongMetadata] iTunes search failed: \(error)")
             return []
         }
     }
@@ -741,16 +808,16 @@ extension SongMetadata {
         if let t = match.trackName { newSong.title = t }
         if let a = match.artistName { newSong.artist = a }
         if let al = match.collectionName { newSong.album = al }
-        if let g = match.primaryGenreName { newSong.genre = g }
+        if let g = match.primaryGenreName { newSong.genre = canonicalGenre(g) }
         if let aId = match.artistId { newSong.artistId = Int64(aId) }
         if let cId = match.collectionId { newSong.playlistId = Int64(cId) }
         if let tId = match.trackId { newSong.storeId = Int64(tId) }
         newSong.storefrontId = 143441 // Default to US Storefront for injected tracks
         
-        if let tn = match.trackNumber { newSong.trackNumber = tn }
-        if let tc = match.trackCount { newSong.trackCount = tc }
-        if let dn = match.discNumber { newSong.discNumber = dn }
-        if let dc = match.discCount { newSong.discCount = dc }
+        newSong.trackNumber = match.trackNumber
+        newSong.trackCount = match.trackCount
+        newSong.discNumber = match.discNumber
+        newSong.discCount = match.discCount
         
         if let dateStr = match.releaseDate {
             if let yearInt = Int(dateStr.prefix(4)) {
@@ -768,16 +835,17 @@ extension SongMetadata {
             if let highResUrl = URL(string: highResUrlString),
                let (artData, _) = try? await URLSession.shared.data(from: highResUrl) {
                 newSong.artworkData = artData
-                print("[SongMetadata] Updated artwork with iTunes High-Res version: \(artData.count) bytes")
+                Logger.shared.log("[SongMetadata] Updated artwork with iTunes High-Res version: \(artData.count) bytes")
             }
         }
         
+        newSong.genre = canonicalGenre(newSong.genre)
         return newSong
     }
 
     
     static func enrichWithiTunesMetadata(_ song: SongMetadata) async -> SongMetadata {
-        print("[SongMetadata] Searching iTunes for: \(song.artist) - \(song.title)")
+        Logger.shared.log("[SongMetadata] Searching iTunes for: \(song.artist) - \(song.title)")
         
         let query = "\(song.artist) \(song.title)"
         let results = await searchiTunes(query: query)
@@ -797,10 +865,10 @@ extension SongMetadata {
                 
                 if localNorm.contains(remoteNorm) || remoteNorm.contains(localNorm) {
                     bestMatch = match
-                    print("[SongMetadata] ✓ Validated match: \(remoteTitle) by \(remoteArtist)")
+                    Logger.shared.log("[SongMetadata] ✓ Validated match: \(remoteTitle) by \(remoteArtist)")
                     break 
                 } else {
-                    print("[SongMetadata] x Rejected match: \(remoteTitle) by \(remoteArtist) (Artist mismatch)")
+                    Logger.shared.log("[SongMetadata] x Rejected match: \(remoteTitle) by \(remoteArtist) (Artist mismatch)")
                 }
             } else {
                 
@@ -810,13 +878,12 @@ extension SongMetadata {
         }
         
         guard let match = bestMatch else {
-            print("[SongMetadata] No valid iTunes match found after filtering.")
+            Logger.shared.log("[SongMetadata] No valid iTunes match found after filtering.")
             return song
         }
         
         var enrichedSong = await applyiTunesMatch(match, to: song)
         
-        // Shadow-search Apple Music for canonical IDs IF enabled or if Apple Music is the primary source
         if UserDefaults.standard.bool(forKey: "appleRichMetadata") {
             enrichedSong = await matchAppleMusicMetadata(enrichedSong)
         }
@@ -825,28 +892,40 @@ extension SongMetadata {
     }
     
     static func enrichWithAppleMusicMetadata(_ song: SongMetadata) async -> SongMetadata {
-        print("[SongMetadata] Performing full Apple Music fetch for: \(song.artist) - \(song.title)")
+        Logger.shared.log("[SongMetadata] Performing full Apple Music fetch for: \(song.artist) - \(song.title)")
         let query = "\(song.artist) \(song.title)"
         
         if let amsMatch = await AppleMusicAPI.shared.searchSong(query: query) {
             let enriched = await applyAppleMusicMatch(amsMatch, to: song)
-            print("[SongMetadata] ✓ Apple Music match: \(enriched.title) (\(enriched.storeId))")
+            Logger.shared.log("[SongMetadata] ✓ Apple Music match: \(enriched.title) (\(enriched.storeId))")
             return enriched
         }
         
         return song
     }
+
+    static func enrichWithExactAppleMusicTrack(_ song: SongMetadata, trackID: String) async -> SongMetadata {
+        Logger.shared.log("[SongMetadata] Performing exact Apple Music fetch for track ID: \(trackID)")
+
+        guard let amsMatch = await AppleMusicAPI.shared.fetchSong(id: trackID) else {
+            Logger.shared.log("[SongMetadata] Exact Apple Music fetch failed for track ID: \(trackID)")
+            return song
+        }
+
+        let enriched = await applyAppleMusicMatch(amsMatch, to: song)
+        Logger.shared.log("[SongMetadata] ✓ Exact Apple Music match: \(enriched.title) (\(enriched.storeId))")
+        return enriched
+    }
     
-    /// Shadow-searches the official Apple Music API (AMP-API) to find official Store IDs, XID, and Copyright strings.
     static func matchAppleMusicMetadata(_ song: SongMetadata) async -> SongMetadata {
         let query = "\(song.artist) \(song.title)"
-        print("[SongMetadata] 🔍 Shadow-searching Apple Music for rich metadata: '\(query)'")
+        Logger.shared.log("[SongMetadata] 🔍 Shadow-searching Apple Music for rich metadata: '\(query)'")
         
         if let amsMatch = await AppleMusicAPI.shared.searchSong(query: query) {
-            print("[SongMetadata] ✨ Found Apple Music Server Match: \(amsMatch.attributes.name) by \(amsMatch.attributes.artistName) (ID: \(amsMatch.id))")
+            Logger.shared.log("[SongMetadata] ✨ Found Apple Music Server Match: \(amsMatch.attributes.name) by \(amsMatch.attributes.artistName) (ID: \(amsMatch.id))")
             return await applyAppleMusicMatch(amsMatch, to: song)
         } else {
-            print("[SongMetadata] ⚠️ No rich metadata match found on Apple Music for: '\(query)'")
+            Logger.shared.log("[SongMetadata] ⚠️ No rich metadata match found on Apple Music for: '\(query)'")
         }
         
         return song
@@ -905,7 +984,7 @@ extension SongMetadata {
             let result = try JSONDecoder().decode(DeezerSearchResult.self, from: data)
             return result.data
         } catch {
-            print("[SongMetadata] Deezer search failed: \(error)")
+            Logger.shared.log("[SongMetadata] Deezer search failed: \(error)")
             return []
         }
     }
@@ -917,7 +996,7 @@ extension SongMetadata {
             let (data, _) = try await URLSession.shared.data(from: url)
             return try JSONDecoder().decode(DeezerTrackDetails.self, from: data)
         } catch {
-            print("[SongMetadata] Failed to fetch Deezer track details: \(error)")
+            Logger.shared.log("[SongMetadata] Failed to fetch Deezer track details: \(error)")
             return nil
         }
     }
@@ -938,8 +1017,8 @@ extension SongMetadata {
         
         
         if let details = await fetchDeezerTrackDetails(id: match.id) {
-            if let t = details.track_position { newSong.trackNumber = t }
-            if let d = details.disk_number { newSong.discNumber = d }
+            newSong.trackNumber = details.track_position
+            newSong.discNumber = details.disk_number
             
             if let releaseDate = details.release_date {
                 
@@ -948,31 +1027,30 @@ extension SongMetadata {
                     newSong.year = yearInt
                 }
             }
-            print("[SongMetadata] Enhanced with Deezer details: Trk \(details.track_position ?? 0), Disc \(details.disk_number ?? 0), Year \(newSong.year)")
+            Logger.shared.log("[SongMetadata] Enhanced with Deezer details: Trk \(details.track_position ?? 0), Disc \(details.disk_number ?? 0), Year \(newSong.year)")
         }
         
         
         if let artUrl = URL(string: match.album.cover_xl),
            let (artData, _) = try? await URLSession.shared.data(from: artUrl) {
             newSong.artworkData = artData
-            print("[SongMetadata] Updated artwork with Deezer High-Res version: \(artData.count) bytes")
+            Logger.shared.log("[SongMetadata] Updated artwork with Deezer High-Res version: \(artData.count) bytes")
         }
         
         return newSong
     }
     
     static func enrichWithDeezerMetadata(_ song: SongMetadata) async -> SongMetadata {
-        print("[SongMetadata] Searching Deezer for: \(song.artist) - \(song.title)")
+        Logger.shared.log("[SongMetadata] Searching Deezer for: \(song.artist) - \(song.title)")
         let query = "\(song.artist) \(song.title)"
         let results = await searchDeezer(query: query)
         
         var enrichedSong = song
         if let firstMatch = results.first {
-             print("[SongMetadata] ✓ Deezer match: \(firstMatch.title) by \(firstMatch.artist.name)")
+             Logger.shared.log("[SongMetadata] ✓ Deezer match: \(firstMatch.title) by \(firstMatch.artist.name)")
              enrichedSong = await applyDeezerMatch(firstMatch, to: song)
         }
         
-        // Shadow-search Apple Music for canonical IDs IF enabled or if Apple Music is the primary source
         if UserDefaults.standard.bool(forKey: "appleRichMetadata") {
             enrichedSong = await matchAppleMusicMetadata(enrichedSong)
         }
@@ -988,9 +1066,8 @@ actor AppleMusicAPI {
     func getToken() async -> String? {
         if let token = cachedToken { return token }
         
-        print("[AppleMusicAPI] Fetching token via URLSession...")
+        Logger.shared.log("[AppleMusicAPI] Fetching token via URLSession...")
         
-        // Step 1: Fetch the Apple Music HTML page
         guard let pageUrl = URL(string: "https://music.apple.com/us/browse") else { return nil }
         var pageRequest = URLRequest(url: pageUrl)
         pageRequest.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
@@ -998,54 +1075,51 @@ actor AppleMusicAPI {
         do {
             let (htmlData, _) = try await URLSession.shared.data(for: pageRequest)
             guard let html = String(data: htmlData, encoding: .utf8) else {
-                print("[AppleMusicAPI] ⚠️ Failed to decode HTML")
+                Logger.shared.log("[AppleMusicAPI] ⚠️ Failed to decode HTML")
                 return nil
             }
             
-            // Step 2: Find the JS bundle URL containing the token
             let scriptPattern = #"src="([^"]*\/assets\/index[^"]*\.js)""#
             guard let scriptRegex = try? NSRegularExpression(pattern: scriptPattern),
                   let scriptMatch = scriptRegex.firstMatch(in: html, range: NSRange(html.startIndex..<html.endIndex, in: html)),
                   let scriptRange = Range(scriptMatch.range(at: 1), in: html) else {
-                print("[AppleMusicAPI] ⚠️ No index JS bundle found in HTML")
+                Logger.shared.log("[AppleMusicAPI] ⚠️ No index JS bundle found in HTML")
                 return nil
             }
             
             let jsPath = String(html[scriptRange])
             let jsUrlString = jsPath.hasPrefix("http") ? jsPath : "https://music.apple.com\(jsPath)"
             guard let jsUrl = URL(string: jsUrlString) else {
-                print("[AppleMusicAPI] ⚠️ Invalid JS URL: \(jsUrlString)")
+                Logger.shared.log("[AppleMusicAPI] ⚠️ Invalid JS URL: \(jsUrlString)")
                 return nil
             }
             
-            print("[AppleMusicAPI] Found JS bundle: \(jsPath)")
+            Logger.shared.log("[AppleMusicAPI] Found JS bundle: \(jsPath)")
             
-            // Step 3: Fetch the JS bundle
             var jsRequest = URLRequest(url: jsUrl)
             jsRequest.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
             
             let (jsData, _) = try await URLSession.shared.data(for: jsRequest)
             guard let jsContent = String(data: jsData, encoding: .utf8) else {
-                print("[AppleMusicAPI] ⚠️ Failed to decode JS bundle")
+                Logger.shared.log("[AppleMusicAPI] ⚠️ Failed to decode JS bundle")
                 return nil
             }
             
-            // Step 4: Extract the JWT token
             let tokenPattern = #"eyJhbGciOi[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#
             guard let tokenRegex = try? NSRegularExpression(pattern: tokenPattern),
                   let tokenMatch = tokenRegex.firstMatch(in: jsContent, range: NSRange(jsContent.startIndex..<jsContent.endIndex, in: jsContent)),
                   let tokenRange = Range(tokenMatch.range, in: jsContent) else {
-                print("[AppleMusicAPI] ⚠️ No token found in JS bundle")
+                Logger.shared.log("[AppleMusicAPI] ⚠️ No token found in JS bundle")
                 return nil
             }
             
             let token = String(jsContent[tokenRange])
             self.cachedToken = token
-            print("[AppleMusicAPI] ✅ Token fetched successfully via URLSession")
+            Logger.shared.log("[AppleMusicAPI] ✅ Token fetched successfully via URLSession")
             return token
             
         } catch {
-            print("[AppleMusicAPI] ⚠️ Token fetch failed: \(error)")
+            Logger.shared.log("[AppleMusicAPI] ⚠️ Token fetch failed: \(error)")
             return nil
         }
     }
@@ -1072,9 +1146,13 @@ actor AppleMusicAPI {
         let name: String
         let artistName: String
         let albumName: String?
+        let genreNames: [String]?
         let isrc: String?
         let contentRating: String?
         let releaseDate: String?
+        let trackNumber: Int?
+        let discNumber: Int?
+        let durationInMillis: Int?
         let artwork: AppleMusicArtwork?
     }
     
@@ -1141,7 +1219,7 @@ actor AppleMusicAPI {
             let result = try JSONDecoder().decode(AppleMusicSearchResponse.self, from: data)
             return result.results.songs?.data ?? []
         } catch {
-            print("[AppleMusicAPI] Search failed: \(error)")
+            Logger.shared.log("[AppleMusicAPI] Search failed: \(error)")
             return []
         }
     }
@@ -1149,6 +1227,32 @@ actor AppleMusicAPI {
     func searchSong(query: String) async -> AppleMusicSong? {
         return await searchSongs(query: query, limit: 1).first
     }
+
+    func fetchSong(id: String) async -> AppleMusicSong? {
+        guard let token = await getToken() else { return nil }
+
+        let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
+        guard let url = URL(string: "https://amp-api.music.apple.com/v1/catalog/\(region)/songs/\(id)?include=albums,artists,composers,genres") else {
+            return nil
+        }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("https://music.apple.com", forHTTPHeaderField: "Origin")
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let result = try JSONDecoder().decode(AppleMusicDirectSongResponse.self, from: data)
+            return result.data.first
+        } catch {
+            Logger.shared.log("[AppleMusicAPI] Direct song fetch failed: \(error)")
+            return nil
+        }
+    }
+}
+
+private struct AppleMusicDirectSongResponse: Codable {
+    let data: [AppleMusicAPI.AppleMusicSong]
 }
 
 extension SongMetadata {

@@ -41,7 +41,7 @@ struct InjectMusicIntent: AppIntent {
                     songs.append(song)
                 }
             } catch {
-                print("[Shortcuts] Couldn't save file: \(error)")
+                Logger.shared.log("[Shortcuts] Couldn't save file: \(error)")
             }
         }
         

@@ -9,7 +9,7 @@ struct SongRowView: View {
     var body: some View {
         HStack(spacing: 14) {
             
-            if let artworkData = song.artworkData, let uiImage = UIImage(data: artworkData) {
+            if let artworkData = (song.artworkPreviewData ?? song.artworkData), let uiImage = UIImage(data: artworkData) {
                 Image(uiImage: uiImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

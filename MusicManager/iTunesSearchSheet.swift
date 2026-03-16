@@ -225,7 +225,6 @@ struct iTunesSearchSheet: View {
                      self.isLoading = false
                  }
             } else if activeSource == "apple" {
-                 // Fetch up to 10 results for the picker
                  let results = await AppleMusicAPI.shared.searchSongs(query: searchQuery, limit: 10)
                  await MainActor.run {
                      self.appleResults = results

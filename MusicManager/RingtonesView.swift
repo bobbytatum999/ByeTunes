@@ -48,6 +48,28 @@ struct RingtonesView: View {
         let m4r = UTType(filenameExtension: "m4r") ?? .audio
         return [m4r, .mp3]
     }
+
+    private var disabledMessageView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "bell.slash.circle.fill")
+                .font(.system(size: 56, weight: .regular))
+                .foregroundStyle(.orange)
+
+            VStack(spacing: 10) {
+                Text("Ringtones Injection Disabled")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+
+                Text("ringtones injection disabled due to instability, support will return soon (hopefully)")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 28)
+    }
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -79,192 +101,10 @@ struct RingtonesView: View {
                 .padding(.top, 0)
                 
                 
-                VStack(spacing: 12) {
-                    Button {
-                        showingPicker = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "plus")
-                                .font(.body.weight(.medium))
-                            Text("Add Ringtones")
-                                .font(.body.weight(.medium))
-                        }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color.accentColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    
-                    
-                    Button {
-                        injectRingtones()
-                    } label: {
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                
-                                RoundedRectangle(cornerRadius: 24)
-                                    .fill(Color(.systemGray6))
-                                
-                                
-                                if isInjecting {
-                                    RoundedRectangle(cornerRadius: 24)
-                                        .fill(Color.black.opacity(0.15))
-                                        .frame(width: geo.size.width * injectProgress)
-                                        .animation(.easeInOut(duration: 0.3), value: injectProgress)
-                                }
-                                
-                                
-                                HStack {
-                                    Spacer()
-                                    if isInjecting {
-                                        Text("Injecting \(currentInjectIndex)/\(totalInjectCount)")
-                                            .font(.body.weight(.medium))
-                                    } else {
-                                        Image(systemName: "arrow.down.to.line")
-                                            .font(.body.weight(.medium))
-                                        Text("Inject to Device")
-                                            .font(.body.weight(.medium))
-                                    }
-                                    Spacer()
-                                }
-                                .foregroundColor(.primary)
-                            }
-                        }
-                        .frame(height: 50)
-                        .clipShape(RoundedRectangle(cornerRadius: 24))
-                    }
-                    .disabled(ringtones.isEmpty || isInjecting || !manager.heartbeatReady)
-                    .opacity(ringtones.isEmpty ? 0.6 : 1)
-                }
-                
-                
-                if !ringtones.isEmpty && !isInjecting {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
-                        Text("IMPORTANT: Ensure Settings App is closed before injecting")
-                            .fontWeight(.medium)
-                            .foregroundColor(.orange)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .font(.caption)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.orange.opacity(0.2), lineWidth: 1)
-                    )
-                }
-                
-                
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Queue")
-                            .font(.title3.weight(.semibold))
-                            .foregroundColor(.secondary)
-                        
-                        Spacer()
-                        
-                        if !ringtones.isEmpty {
-                            Text("\(ringtones.count) ringtones")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    if ringtones.isEmpty {
-                        VStack(spacing: 20) {
-                            Image(systemName: "bell.slash")
-                                .font(.system(size: 48, weight: .light))
-                                .foregroundColor(Color(.systemGray3))
-                                .padding(.top, 20)
-                            
-                            VStack(spacing: 4) {
-                                Text("No ringtones in queue")
-                                    .font(.headline)
-                                    .foregroundColor(.secondary)
-                                
-                                Text("Tap \"Add Ringtones\" to get started")
-                                    .font(.subheadline)
-                                    .foregroundColor(Color(.systemGray))
-                            }
-                            
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("💡 NOTE FOR IOS 26+")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(.secondary)
-                                    .tracking(0.5)
-                                
-                                Text("iOS 26 and above include native ringtone management. You can still use this tool to inject custom tones if you prefer.")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary.opacity(0.9))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(16)
-                            .background(Color(.systemGray6).opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .padding(.top, 10)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 20)
-                    } else {
-                        ScrollView {
-                            VStack(spacing: 0) {
-                                ForEach(Array(ringtones.enumerated()), id: \.element.id) { index, item in
-                                    VStack(spacing: 0) {
-                                        HStack {
-                                            Image(systemName: "waveform")
-                                                .font(.title2)
-                                                .foregroundColor(.purple)
-                                                .frame(width: 40, height: 40)
-                                                .background(Color.purple.opacity(0.1))
-                                                .cornerRadius(8)
-                                            
-                                            VStack(alignment: .leading) {
-                                                Text(item.name)
-                                                    .font(.body)
-                                                    .fontWeight(.medium)
-                                                Text(item.remoteFilename)
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            
-                                            Spacer()
-                                            
-                                            Button {
-                                                withAnimation {
-                                                    ringtones.removeAll { $0.id == item.id }
-                                                }
-                                            } label: {
-                                                Image(systemName: "xmark.circle.fill")
-                                                    .foregroundColor(.gray.opacity(0.5))
-                                            }
-                                        }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
-                                        
-                                        if index < ringtones.count - 1 {
-                                            Divider()
-                                                .padding(.leading, 68)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .background(Color(.systemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color(.systemGray5), lineWidth: 1)
-                        )
-                    }
-                }
-                
+                disabledMessageView
+
                 Spacer()
+
             }
             .padding(.horizontal, 20)
             
@@ -305,8 +145,6 @@ struct RingtonesView: View {
         Task {
             for url in urls {
                  
-                 // Since we are using asCopy: true, we don't need security scoped access                 
-                 // Enforce conversion to a perfectly compliant M4A container for ALL ringtone imports
                  let finalURL = await convertToM4R(url)
                  
                  if let validURL = finalURL {
@@ -334,8 +172,6 @@ struct RingtonesView: View {
         exportSession.outputURL = outputURL
         exportSession.outputFileType = .m4a
         
-        // iOS strictly rejects ringtones longer than 40 seconds. We use 30 seconds
-        // as the standard iTunes limit to be perfectly safe.
         let durationSeconds = CMTimeGetSeconds(asset.duration)
         let maxDuration = 30.0
         
