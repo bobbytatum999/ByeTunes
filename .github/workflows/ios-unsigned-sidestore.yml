@@ -28,9 +28,7 @@ jobs:
       SCHEME: MusicManager
       APP_DIR: MusicManager
       CONFIGURATION: Release
-      DERIVED_DATA: ${{ runner.temp }}/DerivedData
-      PAYLOAD_DIR: ${{ runner.temp }}/Payload
-      ARTIFACT_DIR: ${{ runner.temp }}/artifacts
+      ARTIFACT_DIR: ci-artifacts
 
     steps:
       - name: Check out repository
@@ -96,6 +94,8 @@ jobs:
         run: |
           set -euxo pipefail
 
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
+
           xcodebuild \
             -project "$PROJECT_FILE" \
             -scheme "$SCHEME" \
@@ -115,34 +115,39 @@ jobs:
         run: |
           set -euxo pipefail
 
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
+          PAYLOAD_DIR="$RUNNER_TEMP/Payload"
+          ARTIFACT_PATH="$GITHUB_WORKSPACE/$ARTIFACT_DIR"
           APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION-iphoneos/$SCHEME.app"
 
           test -d "$APP_PATH"
 
-          mkdir -p "$PAYLOAD_DIR" "$ARTIFACT_DIR"
+          rm -rf "$PAYLOAD_DIR" "$ARTIFACT_PATH"
+          mkdir -p "$PAYLOAD_DIR" "$ARTIFACT_PATH"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"
 
           rm -rf "$PAYLOAD_DIR/$SCHEME.app/_CodeSignature" || true
           rm -f "$PAYLOAD_DIR/$SCHEME.app/embedded.mobileprovision" || true
 
           if [ -d "$DERIVED_DATA/Build/Products/$CONFIGURATION-iphoneos/$SCHEME.app.dSYM" ]; then
-            cp -R "$DERIVED_DATA/Build/Products/$CONFIGURATION-iphoneos/$SCHEME.app.dSYM" "$ARTIFACT_DIR/"
+            cp -R "$DERIVED_DATA/Build/Products/$CONFIGURATION-iphoneos/$SCHEME.app.dSYM" "$ARTIFACT_PATH/"
           fi
 
-          ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$ARTIFACT_DIR/ByeTunes-unsigned.ipa"
-          cp -R "$APP_PATH" "$ARTIFACT_DIR/"
+          ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$ARTIFACT_PATH/ByeTunes-unsigned.ipa"
+          cp -R "$APP_PATH" "$ARTIFACT_PATH/"
+          cp "$RUNNER_TEMP/xcodebuild.log" "$ARTIFACT_PATH/"
 
-          ls -la "$ARTIFACT_DIR"
+          ls -la "$ARTIFACT_PATH"
 
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ByeTunes-unsigned-iphoneos
           path: |
-            ${{ runner.temp }}/artifacts/ByeTunes-unsigned.ipa
-            ${{ runner.temp }}/artifacts/MusicManager.app
-            ${{ runner.temp }}/artifacts/MusicManager.app.dSYM
-            ${{ runner.temp }}/xcodebuild.log
+            ci-artifacts/ByeTunes-unsigned.ipa
+            ci-artifacts/MusicManager.app
+            ci-artifacts/MusicManager.app.dSYM
+            ci-artifacts/xcodebuild.log
           if-no-files-found: error
 
       - name: Attach unsigned IPA to GitHub release
@@ -150,4 +155,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ runner.temp }}/artifacts/ByeTunes-unsigned.ipa
+            ci-artifacts/ByeTunes-unsigned.ipa
