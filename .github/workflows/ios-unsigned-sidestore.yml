@@ -86,12 +86,6 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: byetunes-idevice-ffi-v1
-          cache-targets: true
-
       - name: Build idevice-ffi static library
         id: build-idevice
         shell: bash
