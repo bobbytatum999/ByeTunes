@@ -3272,61 +3272,67 @@ class DeviceManager: ObservableObject {
             
             progress("Uploading songs...")
             Logger.shared.log("[DeviceManager] Step 4: Uploading MP3 files")
-            
+
             var uploadedCount = 0
             var skippedCount = 0
-            
-            
+
+
             for (index, song) in validSongs.enumerated() {
-                
+
                 if existingFiles.contains(song.remoteFilename) {
                     Logger.shared.log("[DeviceManager] Skipping (already exists): \(song.title)")
                     skippedCount += 1
                     continue
                 }
-                
+
                 progress("Uploading \(index + 1)/\(validSongs.count): \(song.title)")
 
                 let remotePath = "\(musicDir)/\(song.remoteFilename)"
                 let uploadSuccess = self.uploadFileToDeviceWithReconnect(localURL: song.localURL, remotePath: remotePath, afc: &afc, verify: false)
-                
+
                 if !uploadSuccess {
                     Logger.shared.log("[DeviceManager] ERROR: Failed to upload \(song.title)")
                     DispatchQueue.main.async { completion(false) }
                     return
                 }
-                
-                uploadedCount += 1
-                
-                
-                
-                if let artworkData = song.artworkData, index < artworkInfo.count {
-                    let info = artworkInfo[index]
-                    let artworkRelativePath = info.artworkHash  
-                    
-                    let pathComponents = artworkRelativePath.components(separatedBy: "/")
-                    let folderName = pathComponents.count >= 1 ? pathComponents[0] : "00"
-	                    let artworkDir = "/iTunes_Control/iTunes/Artwork/Originals/\(folderName)"
-                    let artworkPath = "/iTunes_Control/iTunes/Artwork/Originals/\(artworkRelativePath)"
-                    
-                    Logger.shared.log("[DeviceManager] Uploading artwork for: \(song.title) -> \(artworkPath)")
-                    afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork")
-                    afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork/Originals")
-                    afc_make_directory(afc, artworkDir)
 
-	                    if self.uploadDataToDeviceWithReconnect(artworkData, remotePath: artworkPath, afc: &afc, verify: false) {
-	                        Logger.shared.log("[DeviceManager] Artwork uploaded to: \(artworkPath)")
-	                    } else {
-	                        Logger.shared.log("[DeviceManager] WARNING: Artwork upload failed for: \(song.title)")
-	                    }
+                uploadedCount += 1
+            }
+
+            Logger.shared.log("[DeviceManager] Uploaded: \(uploadedCount), Skipped: \(skippedCount)")
+
+
+
+            Logger.shared.log("[DeviceManager] Step 4.5: Uploading artwork files")
+            var artworkIndex = 0
+            for song in validSongs {
+                if existingFiles.contains(song.remoteFilename) { continue }
+
+                if let artworkData = song.artworkData {
+                    if artworkIndex < artworkInfo.count {
+                        let info = artworkInfo[artworkIndex]
+                        let artworkRelativePath = info.artworkHash
+
+                        let pathComponents = artworkRelativePath.components(separatedBy: "/")
+                        let folderName = pathComponents.count >= 1 ? pathComponents[0] : "00"
+                        let artworkDir = "/iTunes_Control/iTunes/Artwork/Originals/\(folderName)"
+                        let artworkPath = "/iTunes_Control/iTunes/Artwork/Originals/\(artworkRelativePath)"
+
+                        Logger.shared.log("[DeviceManager] Uploading artwork for: \(song.title) -> \(artworkPath)")
+                        afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork")
+                        afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork/Originals")
+                        afc_make_directory(afc, artworkDir)
+
+                        if self.uploadDataToDeviceWithReconnect(artworkData, remotePath: artworkPath, afc: &afc, verify: false) {
+                            Logger.shared.log("[DeviceManager] Artwork uploaded to: \(artworkPath)")
+                        } else {
+                            Logger.shared.log("[DeviceManager] WARNING: Artwork upload failed for: \(song.title)")
+                        }
+                        artworkIndex += 1
+                    }
                 }
             }
-            
-            Logger.shared.log("[DeviceManager] Uploaded: \(uploadedCount), Skipped: \(skippedCount)")
-            
-            
-            
-            Logger.shared.log("[DeviceManager] Step 4.5: ArtworkDB generation SKIPPED - iOS handles artwork internally")
+            Logger.shared.log("[DeviceManager] Artwork upload complete: \(artworkIndex) artwork files uploaded")
 
             
             
@@ -3525,51 +3531,61 @@ class DeviceManager: ObservableObject {
             
             progress("Uploading songs...")
             Logger.shared.log("[DeviceManager] Step 4: Uploading MP3 files (playlist mode)")
-            
+
             var uploadedCount = 0
-            
+
             for (index, song) in validSongs.enumerated() {
-                
+
                 if existingFiles.contains(song.remoteFilename) {
                     Logger.shared.log("[DeviceManager] Skipping (already exists): \(song.title)")
                     continue
                 }
-                
+
                 progress("Uploading \(index + 1)/\(validSongs.count): \(song.title)")
-                
+
                 let remotePath = "\(musicDir)/\(song.remoteFilename)"
                 let uploadSuccess = self.uploadFileToDeviceWithReconnect(localURL: song.localURL, remotePath: remotePath, afc: &afc, verify: false)
-                
+
                 if !uploadSuccess {
                     Logger.shared.log("[DeviceManager] ERROR: Failed to upload \(song.title)")
                     DispatchQueue.main.async { completion(false) }
                     return
                 }
                 uploadedCount += 1
-                
-                if let artworkData = song.artworkData, index < artworkInfo.count {
-                    let info = artworkInfo[index]
-                    let artworkRelativePath = info.artworkHash
-                    
-                    let pathComponents = artworkRelativePath.components(separatedBy: "/")
-                    let folderName = pathComponents.count >= 1 ? pathComponents[0] : "00"
-                    let artworkDir = "/iTunes_Control/iTunes/Artwork/Originals/\(folderName)"
-                    let artworkPath = "/iTunes_Control/iTunes/Artwork/Originals/\(artworkRelativePath)"
-                    
-                    Logger.shared.log("[DeviceManager] Uploading artwork for: \(song.title) -> \(artworkPath)")
-                    afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork")
-                    afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork/Originals")
-                    afc_make_directory(afc, artworkDir)
-                    
-                    if self.uploadDataToDeviceWithReconnect(artworkData, remotePath: artworkPath, afc: &afc, verify: false) {
-                        Logger.shared.log("[DeviceManager] Artwork uploaded to: \(artworkPath)")
-                    } else {
-                        Logger.shared.log("[DeviceManager] WARNING: Artwork upload failed for: \(song.title)")
+            }
+
+            Logger.shared.log("[DeviceManager] Uploaded: \(uploadedCount)")
+
+            Logger.shared.log("[DeviceManager] Step 4.5: Uploading artwork files")
+            var artworkIndex = 0
+            for song in validSongs {
+                if existingFiles.contains(song.remoteFilename) { continue }
+
+                if let artworkData = song.artworkData {
+                    if artworkIndex < artworkInfo.count {
+                        let info = artworkInfo[artworkIndex]
+                        let artworkRelativePath = info.artworkHash
+
+                        let pathComponents = artworkRelativePath.components(separatedBy: "/")
+                        let folderName = pathComponents.count >= 1 ? pathComponents[0] : "00"
+                        let artworkDir = "/iTunes_Control/iTunes/Artwork/Originals/\(folderName)"
+                        let artworkPath = "/iTunes_Control/iTunes/Artwork/Originals/\(artworkRelativePath)"
+
+                        Logger.shared.log("[DeviceManager] Uploading artwork for: \(song.title) -> \(artworkPath)")
+                        afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork")
+                        afc_make_directory(afc, "/iTunes_Control/iTunes/Artwork/Originals")
+                        afc_make_directory(afc, artworkDir)
+
+                        if self.uploadDataToDeviceWithReconnect(artworkData, remotePath: artworkPath, afc: &afc, verify: false) {
+                            Logger.shared.log("[DeviceManager] Artwork uploaded to: \(artworkPath)")
+                        } else {
+                            Logger.shared.log("[DeviceManager] WARNING: Artwork upload failed for: \(song.title)")
+                        }
+                        artworkIndex += 1
                     }
                 }
             }
-            
-            Logger.shared.log("[DeviceManager] Uploaded: \(uploadedCount)")
+            Logger.shared.log("[DeviceManager] Artwork upload complete: \(artworkIndex) artwork files uploaded")
 
             
             progress("Uploading database...")
