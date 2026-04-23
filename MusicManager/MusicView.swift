@@ -314,7 +314,7 @@ struct MusicView: View {
                                 ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
                                     VStack(spacing: 0) {
                                         
-                        let canEdit = true
+                                        let canEdit = true
 
                                         
                                         SongRowView(
@@ -343,7 +343,7 @@ struct MusicView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: .infinity) 
+                        .frame(maxHeight: .infinity)
                         .background(Color(.systemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(
@@ -353,9 +353,9 @@ struct MusicView: View {
                     }
                 }
                 
-                Spacer() 
+                Spacer()
             }
-            .padding(.bottom, 40) 
+            .padding(.bottom, 40)
             .padding(.horizontal, 20)
             
 
@@ -379,7 +379,7 @@ struct MusicView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 5)
             .padding(.horizontal, 24)
-            .padding(.bottom, 100) 
+            .padding(.bottom, 100)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .zIndex(100)
         }
@@ -428,8 +428,8 @@ struct MusicView: View {
                     showingPlaylistSheet = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(.secondary.opacity(0.6))
+                        .font(.title2)
+                        .foregroundColor(.secondary.opacity(0.6))
                 }
             }
             .padding([.top, .horizontal], 20)
@@ -478,12 +478,12 @@ struct MusicView: View {
                         
                         if existingPlaylists.isEmpty {
                             Text("No playlists found")
-                            .foregroundColor(.secondary)
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .cornerRadius(16)
-                            .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+                                .foregroundColor(.secondary)
+                                .padding()
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .background(Color(.secondarySystemGroupedBackground))
+                                .cornerRadius(16)
+                                .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
                         } else {
                             ForEach(existingPlaylists) { playlist in
                                 Button {
@@ -529,6 +529,7 @@ struct MusicView: View {
         
         let metadataSource = UserDefaults.standard.string(forKey: "metadataSource") ?? "local"
         let useiTunes = (metadataSource == "itunes")
+        let useYouTube = (metadataSource == "youtube")
         let autofetch = UserDefaults.standard.bool(forKey: "autofetchMetadata")
         let fetchLyrics = UserDefaults.standard.bool(forKey: "fetchLyrics")
         
@@ -612,6 +613,8 @@ struct MusicView: View {
                     song = await SongMetadata.enrichWithiTunesMetadata(song)
                 } else if metadataSource == "deezer" && autofetch {
                     song = await SongMetadata.enrichWithDeezerMetadata(song)
+                } else if useYouTube && autofetch {
+                    song = await SongMetadata.enrichWithYouTubeMetadata(song)
                 } else if metadataSource == "local" && autofetch {
                     if UserDefaults.standard.bool(forKey: "appleRichMetadata") {
                         song = await SongMetadata.matchAppleMusicMetadata(song)
@@ -750,7 +753,9 @@ struct MusicView: View {
                         continue
                     }
 
-                    let previewData = await SongMetadata.extractEmbeddedArtworkThumbnail(from: currentSong.localURL)
+                    let previewData = currentSong.artworkPreviewData
+                        ?? await SongMetadata.extractEmbeddedArtworkThumbnail(from: currentSong.localURL)
+
                     await MainActor.run {
                         if let songIndex = songs.firstIndex(where: { $0.id == songID }) {
                             songs[songIndex].artworkPreviewData = previewData
@@ -822,7 +827,7 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs // Keep a copy for cleanup
+        let songsToInfect = songs
         
         manager.injectSongs(songs: songsToInfect, progress: { progressText in
             DispatchQueue.main.async {
@@ -868,8 +873,6 @@ struct MusicView: View {
                 }
             }
         }
-
-    
     }
 
     private func showToast(title: String, icon: String) {
@@ -1249,8 +1252,8 @@ struct MusicView: View {
         
         isInjecting = true
         injectProgress = 0
-
-        
+        totalInjectCount = songs.count
+        currentInjectIndex = 0
         
         manager.startHeartbeat { success in
             guard success else {
@@ -1275,7 +1278,7 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs // Keep a copy for cleanup
+        let songsToInfect = songs
         
         manager.injectSongsAsPlaylist(songs: songsToInfect, playlistName: name, targetPlaylistPid: pid, progress: { progressText in
             DispatchQueue.main.async {
