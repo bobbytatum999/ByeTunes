@@ -2198,7 +2198,11 @@ final class DownloadViewModel: ObservableObject {
         case .appleMusic, .metadata, .tidal, .all:
             resolved = await resolveITunesPreviewURL(for: track)
         case .youtube:
-            resolved = nil
+            if let videoID = MetadataProvider.extractYouTubeVideoID(from: track.sourceURL) {
+                resolved = await MetadataProvider.resolveYouTubeAudioStreamURL(videoID: videoID)
+            } else {
+                resolved = nil
+            }
         }
 
         if let resolved {
@@ -3793,6 +3797,26 @@ final class DownloadViewModel: ObservableObject {
 
     private func downloadWithFallbacks(track: DownloadTrack) async throws -> BackendDownloadOutcome {
         let serverPreference = DownloaderServerPreference(rawValue: UserDefaults.standard.string(forKey: "downloadServer") ?? "") ?? .auto
+
+        // YouTube tracks use Invidious direct stream extraction
+        if isYouTubeTrack(track) {
+            log("YouTube track detected. Using Invidious stream extraction.")
+            let youtubeCandidates = await buildYouTubeCandidates(track: track)
+            do {
+                if let outcome = try await executeCandidatesUntilSuccess(
+                    youtubeCandidates,
+                    trackID: track.id,
+                    suggestedName: "\(track.artistLine) - \(track.name)",
+                    fallbackExtension: "m4a"
+                ) {
+                    return outcome
+                }
+            } catch {
+                log("YouTube Invidious extraction failed: \(error.localizedDescription)")
+            }
+            throw DownloadError.mappingFailed("YouTube download failed. No audio stream could be extracted.")
+        }
+
         let resolvedSource = await resolvedPrimaryDownloadSource(for: track, serverPreference: serverPreference)
         log("Using primary source URL (\(resolvedSource.platform.displayName)): \(resolvedSource.url)")
 
@@ -3936,6 +3960,19 @@ final class DownloadViewModel: ObservableObject {
             platform = .unknown
         }
         return DownloadSourceChoice(platform: platform, url: sourceURL, backendGenreSource: platform.backendGenreSource)
+    }
+
+    private func isYouTubeTrack(_ track: DownloadTrack) -> Bool {
+        track.provider == .youtube || track.sourceURL.contains("youtube.com") || track.sourceURL.contains("youtu.be")
+    }
+
+    private func buildYouTubeCandidates(track: DownloadTrack) async -> [BackendCandidate] {
+        guard let videoID = MetadataProvider.extractYouTubeVideoID(from: track.sourceURL) else { return [] }
+        guard let streamURL = await MetadataProvider.resolveYouTubeAudioStreamURL(videoID: videoID) else { return [] }
+
+        var request = URLRequest(url: streamURL)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        return [BackendCandidate(label: "YouTube (Invidious)", request: request, tidalAPIBaseURL: nil)]
     }
 
     private func resolvedPrimaryDownloadSource(

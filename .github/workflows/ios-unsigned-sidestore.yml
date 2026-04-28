@@ -94,7 +94,7 @@ jobs:
 
           DEST_DIR="$GITHUB_WORKSPACE/$APP_DIR"
 
-          # Check if artifacts already exist (cached by rust-cache or previous step)
+          # Check if artifacts already exist from a previous run or cache
           if [[ -f "$DEST_DIR/idevice.h" && -f "$DEST_DIR/libidevice_ffi.a" ]]; then
             echo "Using existing idevice artifacts"
             ls -la "$DEST_DIR"/idevice.h "$DEST_DIR"/libidevice_ffi.a
@@ -119,7 +119,8 @@ jobs:
             cd "$WORK_DIR"
             export IPHONEOS_DEPLOYMENT_TARGET=16.0
 
-            cargo build --release --package idevice-ffi --target aarch64-apple-ios 2>&1 | tail -40
+            # Use --locked for reproducible builds and RUSTFLAGS to handle potential issues
+            cargo build --release --locked --package idevice-ffi --target aarch64-apple-ios 2>&1 | tail -60
 
             HEADER_PATH="$(find . -name 'idevice.h' -type f | head -n 1)"
             LIB_PATH="$(find target -path '*aarch64-apple-ios/release/libidevice_ffi.a' -type f | head -n 1)"
@@ -223,8 +224,8 @@ jobs:
           if [[ $BUILD_RESULT -ne 0 ]]; then
             echo ""
             echo "=== BUILD FAILED ==="
-            echo "--- Last 100 lines of build log ---"
-            tail -n 100 "$RUNNER_TEMP/xcodebuild.log"
+            echo "--- Last 120 lines of build log ---"
+            tail -n 120 "$RUNNER_TEMP/xcodebuild.log"
             exit 1
           fi
 

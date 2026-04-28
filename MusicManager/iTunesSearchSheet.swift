@@ -10,10 +10,20 @@ struct iTunesSearchSheet: View {
     @State private var itunesResults: [iTunesSong] = []
     @State private var deezerResults: [DeezerSong] = []
     @State private var appleResults: [AppleMusicAPI.AppleMusicSong] = []
+    @State private var youtubeResults: [YouTubeMetadataCandidate] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     
     @State private var activeSource: String = "itunes"
+    
+    private var sourceDisplayName: String {
+        switch activeSource {
+        case "deezer": return "Deezer"
+        case "apple": return "Apple Music"
+        case "youtube": return "YouTube"
+        default: return "iTunes (\(UserDefaults.standard.string(forKey: "storeRegion") ?? "US"))"
+        }
+    }
     
     var body: some View {
         ZStack {
@@ -31,31 +41,32 @@ struct iTunesSearchSheet: View {
                             Button("iTunes") { activeSource = "itunes" }
                             Button("Deezer") { activeSource = "deezer" }
                             Button("Apple Music") { activeSource = "apple" }
+                            Button("YouTube") { activeSource = "youtube" }
                         } label: {
                             HStack(spacing: 4) {
-                                Text(activeSource == "apple" ? "Apple Music" : activeSource.capitalized)
+                                Text(sourceDisplayName)
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 8, weight: .bold))
                             }
                             .font(.caption2.weight(.bold))
-                            .foregroundColor(activeSource == "deezer" ? .red : .accentColor)
+                            .foregroundColor(activeSource == "deezer" ? .red : (activeSource == "youtube" ? .red : .accentColor))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(
                                 Capsule()
-                                    .stroke(activeSource == "deezer" ? Color.red.opacity(0.3) : Color.accentColor.opacity(0.3), lineWidth: 1)
+                                    .stroke(activeSource == "deezer" ? Color.red.opacity(0.3) : (activeSource == "youtube" ? Color.red.opacity(0.3) : Color.accentColor.opacity(0.3)), lineWidth: 1)
                             )
                         }
                         .offset(y: -2)
                     } else {
-                        Text(activeSource == "apple" ? "Apple Music" : activeSource.capitalized)
+                        Text(sourceDisplayName)
                             .font(.caption2.weight(.bold))
-                            .foregroundColor(activeSource == "deezer" ? .red : .accentColor)
+                            .foregroundColor(activeSource == "deezer" ? .red : (activeSource == "youtube" ? .red : .accentColor))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(
                                 Capsule()
-                                    .stroke(activeSource == "deezer" ? Color.red.opacity(0.3) : Color.accentColor.opacity(0.3), lineWidth: 1)
+                                    .stroke(activeSource == "deezer" ? Color.red.opacity(0.3) : (activeSource == "youtube" ? Color.red.opacity(0.3) : Color.accentColor.opacity(0.3)), lineWidth: 1)
                             )
                             .offset(y: -2)
                     }
@@ -76,7 +87,7 @@ struct iTunesSearchSheet: View {
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                    TextField("Search \(activeSource == "deezer" ? "Deezer" : (activeSource == "apple" ? "Apple Music" : "iTunes (\(UserDefaults.standard.string(forKey: "storeRegion") ?? "US"))"))...", text: $searchQuery)
+                    TextField("Search \(sourceDisplayName)...", text: $searchQuery)
                         .submitLabel(.search)
                         .onSubmit {
                             performSearch()
@@ -104,7 +115,7 @@ struct iTunesSearchSheet: View {
                     VStack(spacing: 12) {
                         ProgressView()
                             .scaleEffect(1.2)
-                        Text("Searching \(activeSource == "deezer" ? "Deezer" : (activeSource == "apple" ? "Apple Music" : "iTunes (\(UserDefaults.standard.string(forKey: "storeRegion") ?? "US"))"))...")
+                        Text("Searching \(sourceDisplayName)...")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -123,7 +134,7 @@ struct iTunesSearchSheet: View {
                     }
                     Spacer()
                     Spacer()
-                } else if (activeSource == "deezer" ? deezerResults.isEmpty : (activeSource == "apple" ? appleResults.isEmpty : itunesResults.isEmpty)) {
+                } else if resultsForActiveSource.isEmpty {
                     Spacer()
                     VStack(spacing: 12) {
                         Image(systemName: "music.note.list")
@@ -170,6 +181,21 @@ struct iTunesSearchSheet: View {
                                         }
                                     }
                                 }
+                            } else if activeSource == "youtube" {
+                                ForEach(Array(youtubeResults.enumerated()), id: \.element.videoID) { index, match in
+                                    VStack(spacing: 0) {
+                                        Button {
+                                            applyYouTubeMatch(match)
+                                        } label: {
+                                            YouTubeRow(match: match)
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                        
+                                        if index < youtubeResults.count - 1 {
+                                            Divider().padding(.leading, 80)
+                                        }
+                                    }
+                                }
                             } else {
                                 ForEach(Array(itunesResults.enumerated()), id: \.element.trackId) { index, match in
                                     VStack(spacing: 0) {
@@ -208,7 +234,17 @@ struct iTunesSearchSheet: View {
             itunesResults = []
             deezerResults = []
             appleResults = []
+            youtubeResults = []
             performSearch()
+        }
+    }
+    
+    private var resultsForActiveSource: [Any] {
+        switch activeSource {
+        case "deezer": return deezerResults
+        case "apple": return appleResults
+        case "youtube": return youtubeResults
+        default: return itunesResults
         }
     }
     
@@ -228,6 +264,12 @@ struct iTunesSearchSheet: View {
                  let results = await AppleMusicAPI.shared.searchSongs(query: searchQuery, limit: 10)
                  await MainActor.run {
                      self.appleResults = results
+                     self.isLoading = false
+                 }
+            } else if activeSource == "youtube" {
+                 let results = await MetadataProvider.searchYouTubeForMetadata(query: searchQuery, limit: 10)
+                 await MainActor.run {
+                     self.youtubeResults = results
                      self.isLoading = false
                  }
             } else {
@@ -269,6 +311,30 @@ struct iTunesSearchSheet: View {
         Task {
             let updatedSong = await SongMetadata.applyAppleMusicMatch(match, to: song)
             
+            await MainActor.run {
+                self.song = updatedSong
+                self.isLoading = false
+                self.isPresented = false
+            }
+        }
+    }
+    
+    private func applyYouTubeMatch(_ match: YouTubeMetadataCandidate) {
+        isLoading = true
+        Task {
+            var updatedSong = song
+            let parsed = MetadataProvider.normalizeYouTubeTitle(match.title, channel: match.channelTitle)
+            updatedSong.title = parsed.title
+            updatedSong.artist = parsed.artist
+            updatedSong.album = parsed.album
+            updatedSong.youtubeVideoID = match.videoID
+            if let thumbURL = match.thumbnailURL,
+               let (data, _) = try? await URLSession.shared.data(from: thumbURL) {
+                updatedSong.artworkData = data
+            }
+            if let duration = match.durationMs, duration > 0 {
+                updatedSong.durationMs = duration
+            }
             await MainActor.run {
                 self.song = updatedSong
                 self.isLoading = false
@@ -355,6 +421,39 @@ struct AppleMusicRow: View {
                 Text(match.attributes.artistName).font(.subheadline).foregroundColor(.secondary).lineLimit(1)
                 if let album = match.attributes.albumName {
                     Text(album).font(.caption).foregroundColor(.secondary.opacity(0.8)).lineLimit(1)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption).foregroundColor(Color(uiColor: .tertiaryLabel))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+struct YouTubeRow: View {
+    let match: YouTubeMetadataCandidate
+    var body: some View {
+        HStack(spacing: 14) {
+            AsyncImage(url: match.thumbnailURL) { image in
+                image.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Color(uiColor: .systemGray5)
+                    .overlay(Image(systemName: "play.rectangle").foregroundColor(.secondary))
+            }
+            .frame(width: 48, height: 48).cornerRadius(6)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text(match.title).font(.body).foregroundColor(.primary).lineLimit(1)
+                Text(match.channelTitle).font(.subheadline).foregroundColor(.secondary).lineLimit(1)
+                if let durationMs = match.durationMs, durationMs > 0 {
+                    let seconds = durationMs / 1000
+                    let minutes = seconds / 60
+                    let remainingSeconds = seconds % 60
+                    Text("\(minutes):\(String(format: "%02d", remainingSeconds))")
+                        .font(.caption)
+                        .foregroundColor(.secondary.opacity(0.8))
+                        .lineLimit(1)
                 }
             }
             Spacer()
