@@ -18,7 +18,7 @@ struct DownloadView: View {
         case all
 
         static var allCases: [SearchProvider] {
-            [.appleMusic, .metadata, .all]
+            [.appleMusic, .tidal, .metadata, .all]
         }
 
         var id: String { rawValue }
@@ -89,7 +89,7 @@ struct DownloadView: View {
             guard let provider = SearchProvider(rawValue: searchProviderRaw) else {
                 return .appleMusic
             }
-            return provider == .tidal ? .appleMusic : provider
+            return provider
         }
         nonmutating set { searchProviderRaw = newValue.rawValue }
     }

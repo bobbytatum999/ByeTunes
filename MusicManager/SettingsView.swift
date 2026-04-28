@@ -1424,7 +1424,7 @@ private struct DownloaderSettingsScreen: View {
                             .padding(.horizontal, 16)
                         }
 
-                        if metadataSource == "itunes" || metadataSource == "deezer" || metadataSource == "apple" {
+                        if metadataSource != "local" {
                             Divider().padding(.leading, 56)
 
                             Toggle(isOn: $autofetchMetadata) {
@@ -1494,7 +1494,7 @@ private struct DownloaderSettingsScreen: View {
                         .padding(.vertical, 10)
                         .padding(.horizontal, 16)
 
-                        if metadataSource == "itunes" {
+                        if metadataSource == "itunes" || metadataSource == "apple" || metadataSource == "all" {
                             Divider().padding(.leading, 56)
 
                             serverPickerRow(
@@ -1831,7 +1831,7 @@ private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, C
     case all
 
     static var allCases: [DownloadSearchProviderOption] {
-        [.appleMusic, .metadata, .all]
+        [.appleMusic, .tidal, .metadata, .all]
     }
 
     var id: String { rawValue }
