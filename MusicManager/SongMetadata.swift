@@ -3,6 +3,8 @@ import AVFoundation
 import UIKit
 import CryptoKit
 import CommonCrypto
+import CoreMedia
+import AudioToolbox
 
 
 struct AppleMusicArtworkColors {
@@ -10,6 +12,31 @@ struct AppleMusicArtworkColors {
     var primaryTextColor: String
     var secondaryTextColor: String
     var tertiaryTextColor: String
+}
+
+private struct LocalAudioCharacteristics {
+    var audioFormat: Int = 0
+    var codecType: Int = 0
+    var codecSubtype: Int = 0
+    var sampleRate: Double = 0
+    var bitRate: Int = 0
+    var isDolbyAtmos: Bool = false
+    var hasSpatialAudio: Bool = false
+}
+
+private struct FLACFallbackMetadata {
+    var title: String?
+    var artist: String?
+    var album: String?
+    var albumArtist: String?
+    var genre: String?
+    var year: Int?
+    var trackNumber: Int?
+    var trackCount: Int?
+    var discNumber: Int?
+    var discCount: Int?
+    var lyrics: String?
+    var artworkData: Data?
 }
 
 struct SongMetadata: Identifiable {
@@ -28,6 +55,16 @@ struct SongMetadata: Identifiable {
     var artworkData: Data?
     var artworkPreviewData: Data? = nil
     var appleMusicArtworkColors: AppleMusicArtworkColors? = nil
+    var appleMusicAudioTraits: [String] = []
+    var isMasteredForItunes: Bool = false
+    var isAppleDigitalMaster: Bool = false
+    var playbackAudioFormat: Int = 0
+    var playbackCodecType: Int = 0
+    var playbackCodecSubtype: Int = 0
+    var playbackSampleRate: Double = 0
+    var playbackBitRate: Int = 0
+    var localFileHasDolbyAtmos: Bool = false
+    var localFileHasSpatialAudio: Bool = false
     
     var trackNumber: Int?
     var trackCount: Int?
@@ -47,6 +84,14 @@ struct SongMetadata: Identifiable {
     var releaseDate: Int = 0
     
     var richAppleMetadataFetched: Bool = false
+
+    var isDolbyAtmosCapable: Bool {
+        localFileHasDolbyAtmos || appleMusicAudioTraits.contains { $0.caseInsensitiveCompare("atmos") == .orderedSame }
+    }
+
+    var hasSpatialAudioTrait: Bool {
+        localFileHasSpatialAudio || appleMusicAudioTraits.contains { $0.caseInsensitiveCompare("spatial") == .orderedSame }
+    }
     
     
     var artworkToken: String {
@@ -145,6 +190,252 @@ struct SongMetadata: Identifiable {
         return trimmed
     }
 
+    private static func defaultAudioFormatForExtension(_ ext: String) -> Int {
+        switch ext.lowercased() {
+        case "mp3":
+            return 301
+        case "flac":
+            return 1716281667
+        case "m4a", "aac", "m4r":
+            return 1633772320
+        case "alac":
+            return 1634492771
+        case "wav", "wave":
+            return 1463899717
+        default:
+            return 0
+        }
+    }
+
+    private static func inspectLocalAudioCharacteristics(asset: AVURLAsset, url: URL) async -> LocalAudioCharacteristics {
+        var result = LocalAudioCharacteristics()
+        result.audioFormat = defaultAudioFormatForExtension(url.pathExtension)
+
+        let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        for track in tracks {
+            if result.bitRate == 0 {
+                let estimatedDataRate = Int(((try? await track.load(.estimatedDataRate)) ?? 0).rounded())
+                if estimatedDataRate > 0 {
+                    result.bitRate = estimatedDataRate
+                }
+            }
+
+            let formatDescriptions = (try? await track.load(.formatDescriptions)) ?? []
+            for desc in formatDescriptions {
+                if let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(desc) {
+                    let asbd = asbdPtr.pointee
+                    let formatID = Int(asbd.mFormatID)
+                    if result.audioFormat == 0 {
+                        result.audioFormat = formatID
+                    }
+                    result.codecType = formatID
+                    if result.sampleRate == 0, asbd.mSampleRate > 0 {
+                        result.sampleRate = asbd.mSampleRate
+                    }
+                }
+
+                let extensions = (CMFormatDescriptionGetExtensions(desc) as NSDictionary?) ?? NSDictionary()
+                let formatName = (extensions[kCMFormatDescriptionExtension_FormatName as String] as? String) ?? ""
+                let summary = "\(formatName) \(extensions)".lowercased()
+                if summary.contains("dolby atmos") || summary.contains("joc") || summary.contains("ec-3+joc") {
+                    result.isDolbyAtmos = true
+                }
+                if summary.contains("spatial") || summary.contains("immersive") {
+                    result.hasSpatialAudio = true
+                }
+            }
+        }
+
+        if let allMetadata = try? await asset.load(.metadata) {
+            for item in allMetadata {
+                if let stringValue = try? await item.load(.stringValue) {
+                    let lowered = stringValue.lowercased()
+                    if lowered.contains("dolby atmos") || lowered.contains("atmos") {
+                        result.isDolbyAtmos = true
+                    }
+                    if lowered.contains("spatial audio") || lowered.contains("spatial") {
+                        result.hasSpatialAudio = true
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    static func sanitizedFilenameForMetadataHeuristics(_ filename: String) -> String {
+        var cleaned = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixPatterns = [
+            #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}[ _-]+"#,
+            #"^[0-9A-Fa-f]{8,}(?:-[0-9A-Fa-f]{2,})+[ _-]+"#,
+            #"^[0-9]{6,}[ _-]+"#,
+            #"^[0-9A-Fa-f]{10,}[ _-]+"#
+        ]
+
+        var didStrip = true
+        while didStrip {
+            didStrip = false
+            for pattern in prefixPatterns {
+                let updated = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+                if updated != cleaned {
+                    cleaned = updated.trimmingCharacters(in: .whitespacesAndNewlines)
+                    didStrip = true
+                }
+            }
+        }
+
+        return cleaned
+    }
+
+    private static func isLikelyTemporaryImportToken(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let patterns = [
+            #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"#,
+            #"^[0-9A-Fa-f]{8,}(?:-[0-9A-Fa-f]{2,})+$"#,
+            #"^[0-9]{6,}$"#,
+            #"^[0-9A-Fa-f]{10,}$"#
+        ]
+
+        return patterns.contains {
+            trimmed.range(of: $0, options: .regularExpression) != nil
+        }
+    }
+
+    private static func parseSlashSeparatedPair(_ value: String) -> (Int?, Int?) {
+        let parts = value
+            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        let first = parts.first.flatMap(Int.init)
+        let second = parts.count > 1 ? Int(parts[1]) : nil
+        return (first, second)
+    }
+
+    private static func readBigEndianUInt24(_ data: Data, offset: Int) -> Int? {
+        guard offset + 3 <= data.count else { return nil }
+        return (Int(data[offset]) << 16) | (Int(data[offset + 1]) << 8) | Int(data[offset + 2])
+    }
+
+    private static func readBigEndianUInt32(_ data: Data, offset: Int) -> UInt32? {
+        guard offset + 4 <= data.count else { return nil }
+        return data[offset..<offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    }
+
+    private static func readLittleEndianUInt32(_ data: Data, offset: inout Int) -> UInt32? {
+        guard offset + 4 <= data.count else { return nil }
+        let value = data[offset..<offset + 4].enumerated().reduce(UInt32(0)) { partial, pair in
+            partial | (UInt32(pair.element) << (UInt32(pair.offset) * 8))
+        }
+        offset += 4
+        return value
+    }
+
+    private static func parseFLACMetadataFallback(from url: URL, includeArtwork: Bool) -> FLACFallbackMetadata? {
+        guard url.pathExtension.lowercased() == "flac",
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              data.count >= 4,
+              String(data: data.prefix(4), encoding: .ascii) == "fLaC" else {
+            return nil
+        }
+
+        var offset = 4
+        var parsed = FLACFallbackMetadata()
+
+        while offset + 4 <= data.count {
+            let header = data[offset]
+            offset += 1
+
+            let isLastBlock = (header & 0x80) != 0
+            let blockType = Int(header & 0x7F)
+
+            guard let blockLength = readBigEndianUInt24(data, offset: offset) else { break }
+            offset += 3
+            guard offset + blockLength <= data.count else { break }
+
+            let block = data[offset..<offset + blockLength]
+            offset += blockLength
+
+            switch blockType {
+            case 4:
+                var commentOffset = block.startIndex
+                guard let vendorLength = readLittleEndianUInt32(data, offset: &commentOffset) else { break }
+                commentOffset += Int(vendorLength)
+                guard let commentCount = readLittleEndianUInt32(data, offset: &commentOffset) else { break }
+
+                for _ in 0..<commentCount {
+                    guard let commentLength = readLittleEndianUInt32(data, offset: &commentOffset) else { break }
+                    let length = Int(commentLength)
+                    guard commentOffset + length <= block.endIndex else { break }
+
+                    let commentData = data[commentOffset..<commentOffset + length]
+                    commentOffset += length
+                    guard let comment = String(data: commentData, encoding: .utf8),
+                          let equalsIndex = comment.firstIndex(of: "=") else {
+                        continue
+                    }
+
+                    let key = comment[..<equalsIndex].uppercased()
+                    let value = String(comment[comment.index(after: equalsIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !value.isEmpty else { continue }
+
+                    switch key {
+                    case "TITLE":
+                        parsed.title = value
+                    case "ARTIST":
+                        parsed.artist = value
+                    case "ALBUM":
+                        parsed.album = value
+                    case "ALBUMARTIST", "ALBUM ARTIST":
+                        parsed.albumArtist = value
+                    case "GENRE":
+                        parsed.genre = value
+                    case "DATE", "YEAR":
+                        if parsed.year == nil {
+                            parsed.year = extractYear(from: value)
+                        }
+                    case "TRACKNUMBER":
+                        let (track, total) = parseSlashSeparatedPair(value)
+                        parsed.trackNumber = parsed.trackNumber ?? track
+                        parsed.trackCount = parsed.trackCount ?? total
+                    case "TRACKTOTAL", "TOTALTRACKS":
+                        parsed.trackCount = parsed.trackCount ?? Int(value)
+                    case "DISCNUMBER":
+                        let (disc, total) = parseSlashSeparatedPair(value)
+                        parsed.discNumber = parsed.discNumber ?? disc
+                        parsed.discCount = parsed.discCount ?? total
+                    case "DISCTOTAL", "TOTALDISCS":
+                        parsed.discCount = parsed.discCount ?? Int(value)
+                    case "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS":
+                        parsed.lyrics = parsed.lyrics ?? value
+                    default:
+                        break
+                    }
+                }
+            case 6 where includeArtwork && parsed.artworkData == nil:
+                var pictureOffset = block.startIndex
+                guard readBigEndianUInt32(data, offset: pictureOffset) != nil else { break }
+                pictureOffset += 4
+                guard let mimeLength = readBigEndianUInt32(data, offset: pictureOffset) else { break }
+                pictureOffset += 4 + Int(mimeLength)
+                guard let descriptionLength = readBigEndianUInt32(data, offset: pictureOffset) else { break }
+                pictureOffset += 4 + Int(descriptionLength)
+                pictureOffset += 16
+                guard let imageDataLength = readBigEndianUInt32(data, offset: pictureOffset) else { break }
+                pictureOffset += 4
+                let imageLength = Int(imageDataLength)
+                guard pictureOffset + imageLength <= block.endIndex else { break }
+                parsed.artworkData = Data(data[pictureOffset..<pictureOffset + imageLength])
+            default:
+                break
+            }
+
+            if isLastBlock { break }
+        }
+
+        return parsed
+    }
+
     
     static func fromURL(_ url: URL, includeArtwork: Bool = true) async throws -> SongMetadata {
         let asset = AVURLAsset(url: url)
@@ -158,7 +449,9 @@ struct SongMetadata: Identifiable {
         
         
         let filenameWithoutExt = url.deletingPathExtension().lastPathComponent
-        var title = filenameWithoutExt
+        let sanitizedFilenameWithoutExt = sanitizedFilenameForMetadataHeuristics(filenameWithoutExt)
+        let effectiveFilenameWithoutExt = sanitizedFilenameWithoutExt.isEmpty ? filenameWithoutExt : sanitizedFilenameWithoutExt
+        var title = effectiveFilenameWithoutExt
         var artist = "Unknown Artist"
         var album = "Unknown Album"
         var albumArtist: String?
@@ -183,6 +476,7 @@ struct SongMetadata: Identifiable {
         var copyright: String?
         var xid: String?
         var releaseDate: Int = 0
+        let localAudio = await inspectLocalAudioCharacteristics(asset: asset, url: url)
         
         
         
@@ -354,7 +648,7 @@ struct SongMetadata: Identifiable {
                      if genre == "Music" { genre = val }
                 }
                 
-                if (combined.contains("TITLE") || combined.contains("NAM")) && title == filenameWithoutExt { title = val }
+                if (combined.contains("TITLE") || combined.contains("NAM")) && title == effectiveFilenameWithoutExt { title = val }
                 if (combined.contains("ARTIST") || combined.contains("PERFORMER")) && !combined.contains("ALBUMARTIST") && artist == "Unknown Artist" { artist = val }
                 if combined.contains("ALBUM") && !combined.contains("ALBUMARTIST") && album == "Unknown Album" { album = val }
                 if (combined.contains("GENRE") || combined.contains("GEN")) && genre == "Music" { genre = val }
@@ -417,27 +711,76 @@ struct SongMetadata: Identifiable {
             albumArtist = nil
         }
         
+        if url.pathExtension.lowercased() == "flac" &&
+            (title == effectiveFilenameWithoutExt || artist == "Unknown Artist" || album == "Unknown Album" || trackNumber == nil || discNumber == nil || (includeArtwork && artworkData == nil)) {
+            if let flacFallback = parseFLACMetadataFallback(from: url, includeArtwork: includeArtwork) {
+                if title == effectiveFilenameWithoutExt, let fallbackTitle = flacFallback.title, !fallbackTitle.isEmpty {
+                    title = fallbackTitle
+                }
+                if artist == "Unknown Artist", let fallbackArtist = flacFallback.artist, !fallbackArtist.isEmpty {
+                    artist = fallbackArtist
+                }
+                if album == "Unknown Album", let fallbackAlbum = flacFallback.album, !fallbackAlbum.isEmpty {
+                    album = fallbackAlbum
+                }
+                if albumArtist == nil, let fallbackAlbumArtist = flacFallback.albumArtist, !fallbackAlbumArtist.isEmpty {
+                    albumArtist = fallbackAlbumArtist
+                }
+                if genre == "Music", let fallbackGenre = flacFallback.genre, !fallbackGenre.isEmpty {
+                    genre = fallbackGenre
+                }
+                if year == Calendar.current.component(.year, from: Date()), let fallbackYear = flacFallback.year {
+                    year = fallbackYear
+                }
+                trackNumber = trackNumber ?? flacFallback.trackNumber
+                trackCount = trackCount ?? flacFallback.trackCount
+                discNumber = discNumber ?? flacFallback.discNumber
+                discCount = discCount ?? flacFallback.discCount
+                if lyrics == nil, let fallbackLyrics = flacFallback.lyrics, !fallbackLyrics.isEmpty {
+                    lyrics = SongMetadata.cleanLyrics(fallbackLyrics, title: title, artist: artist)
+                }
+                if includeArtwork && artworkData == nil, let fallbackArtwork = flacFallback.artworkData, !fallbackArtwork.isEmpty {
+                    artworkData = fallbackArtwork
+                }
+                Logger.shared.log("[SongMetadata] Applied FLAC Vorbis fallback metadata for \(url.lastPathComponent)")
+            }
+        }
+
+        if isLikelyTemporaryImportToken(title) {
+            title = effectiveFilenameWithoutExt
+        }
+        if isLikelyTemporaryImportToken(artist) {
+            artist = "Unknown Artist"
+        }
+        if isLikelyTemporaryImportToken(album) {
+            album = "Unknown Album"
+        }
+
         genre = canonicalGenre(genre)
 
-        if title == filenameWithoutExt && filenameWithoutExt.contains(" - ") {
-             let parts = filenameWithoutExt.components(separatedBy: " - ")
+        if (title == effectiveFilenameWithoutExt || artist == "Unknown Artist") && sanitizedFilenameWithoutExt.contains(" - ") {
+             let parts = sanitizedFilenameWithoutExt.components(separatedBy: " - ")
              
              if parts.count >= 3 {
                  if let trackNum = Int(parts[0]) {
                      trackNumber = trackNum
                      artist = parts[1].trimmingCharacters(in: .whitespaces)
                      title = parts[2].trimmingCharacters(in: .whitespaces)
-                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Artist - Title): \(filenameWithoutExt)")
+                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Artist - Title): \(sanitizedFilenameWithoutExt)")
                  } else {
-                     artist = parts[0].trimmingCharacters(in: .whitespaces)
-                     title = parts[1].trimmingCharacters(in: .whitespaces)
+                     let p1 = parts[0].trimmingCharacters(in: .whitespaces)
+                     let p2 = parts[1].trimmingCharacters(in: .whitespaces)
+                     if !isLikelyTemporaryImportToken(p1) {
+                         artist = p1
+                     }
+                     title = p2
                  }
              }
              else if parts.count == 2 {
                  if let trackNum = Int(parts[0]) {
                      trackNumber = trackNum
                      title = parts[1].trimmingCharacters(in: .whitespaces)
-                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Title): \(filenameWithoutExt)")
+                     Logger.shared.log("[SongMetadata] Parsed filename (Track - Title): \(sanitizedFilenameWithoutExt)")
                  } else {
                      let p1 = parts[0].trimmingCharacters(in: .whitespaces)
                      let p2 = parts[1].trimmingCharacters(in: .whitespaces)
@@ -447,12 +790,16 @@ struct SongMetadata: Identifiable {
                      
                      if p2LooksLikeArtist && !p1LooksLikeArtist {
                          title = p1
-                         artist = p2
-                         Logger.shared.log("[SongMetadata] Parsed filename (Title - Artist) [Heuristic]: \(filenameWithoutExt)")
+                         if !isLikelyTemporaryImportToken(p2) {
+                             artist = p2
+                         }
+                         Logger.shared.log("[SongMetadata] Parsed filename (Title - Artist) [Heuristic]: \(sanitizedFilenameWithoutExt)")
                      } else {
-                         artist = p1
+                         if !isLikelyTemporaryImportToken(p1) {
+                             artist = p1
+                         }
                          title = p2
-                         Logger.shared.log("[SongMetadata] Parsed filename (Artist - Title): \(filenameWithoutExt)")
+                         Logger.shared.log("[SongMetadata] Parsed filename (Artist - Title): \(sanitizedFilenameWithoutExt)")
                      }
                  }
              }
@@ -462,6 +809,9 @@ struct SongMetadata: Identifiable {
         
         if isM4A && (storeId > 0 || storefrontId > 0) {
             Logger.shared.log("[SongMetadata] M4A Apple IDs: storeId=\(storeId), sfID=\(storefrontId), atID=\(artistId), cmID=\(composerId), plID=\(playlistId), geID=\(genreStoreId), rtng=\(explicitRating)")
+        }
+        if localAudio.isDolbyAtmos || localAudio.hasSpatialAudio {
+            Logger.shared.log("[SongMetadata] Local audio traits detected for \(url.lastPathComponent): atmos=\(localAudio.isDolbyAtmos), spatial=\(localAudio.hasSpatialAudio), format=\(localAudio.audioFormat), bitrate=\(localAudio.bitRate), sampleRate=\(localAudio.sampleRate)")
         }
         
         return SongMetadata(
@@ -476,6 +826,16 @@ struct SongMetadata: Identifiable {
             fileSize: fileSize,
             remoteFilename: generateRemoteFilename(withExtension: url.pathExtension),
             artworkData: artworkData,
+            appleMusicAudioTraits: [],
+            isMasteredForItunes: false,
+            isAppleDigitalMaster: false,
+            playbackAudioFormat: localAudio.audioFormat,
+            playbackCodecType: localAudio.codecType,
+            playbackCodecSubtype: localAudio.codecSubtype,
+            playbackSampleRate: localAudio.sampleRate,
+            playbackBitRate: localAudio.bitRate,
+            localFileHasDolbyAtmos: localAudio.isDolbyAtmos,
+            localFileHasSpatialAudio: localAudio.hasSpatialAudio,
             trackNumber: trackNumber,
             trackCount: trackCount,
             discNumber: discNumber,
@@ -610,7 +970,7 @@ struct SongMetadata: Identifiable {
                 let lowTitle = title.lowercased()
                 
                 if lowLine == lowTitle {
-                    continue // Exact title match header
+                    continue
                 }
                 
                 if lowLine.contains(lowTitle) {
@@ -620,7 +980,7 @@ struct SongMetadata: Identifiable {
                     }
                     let cleanRemainder = remainder.trimmingCharacters(in: .punctuationCharacters).trimmingCharacters(in: .whitespaces)
                     if cleanRemainder.isEmpty {
-                        continue // It's a header like "Title Lyrics"
+                        continue 
                     }
                 }
             }
@@ -641,7 +1001,7 @@ struct SongMetadata: Identifiable {
         guard let url = URL(string: urlString) else { return nil }
         
         var request = URLRequest(url: url)
-        request.setValue("ByeTunes/2.1 (https://github.com/EduAlexxis/ByeTunes)", forHTTPHeaderField: "User-Agent")
+        request.setValue("ByeTunes/2.2 (https://github.com/EduAlexxis/ByeTunes)", forHTTPHeaderField: "User-Agent")
         
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1269,7 +1629,7 @@ extension SongMetadata {
         guard let url = URL(string: "https://lrclib.net/api/search?q=\(encodedQuery)") else { return [] }
         
         var request = URLRequest(url: url)
-        request.setValue("ByeTunes/2.1 (https://github.com/EduAlexxis/ByeTunes)", forHTTPHeaderField: "User-Agent")
+        request.setValue("ByeTunes/2.2 (https://github.com/EduAlexxis/ByeTunes)", forHTTPHeaderField: "User-Agent")
         
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1478,6 +1838,9 @@ extension SongMetadata {
         if let durationInMillis = amsMatch.attributes.durationInMillis, durationInMillis > 0 {
             enrichedSong.durationMs = durationInMillis
         }
+        enrichedSong.appleMusicAudioTraits = amsMatch.attributes.audioTraits ?? []
+        enrichedSong.isAppleDigitalMaster = amsMatch.attributes.isAppleDigitalMaster ?? false
+        enrichedSong.isMasteredForItunes = amsMatch.attributes.isMasteredForItunes ?? false
         
         if let songIdInt = Int64(amsMatch.id) {
             enrichedSong.storeId = songIdInt
@@ -1567,6 +1930,10 @@ extension SongMetadata {
             }
         }
         enrichedSong.appleMusicArtworkColors = amsMatch.attributes.artwork?.colors
+
+        if !enrichedSong.appleMusicAudioTraits.isEmpty {
+            Logger.shared.log("[SongMetadata] Apple audio traits for \(enrichedSong.title): \(enrichedSong.appleMusicAudioTraits.joined(separator: ", "))")
+        }
         
         enrichedSong.genre = canonicalGenre(enrichedSong.genre)
         enrichedSong.richAppleMetadataFetched = true
@@ -1584,6 +1951,8 @@ struct iTunesSong: Codable, Identifiable {
     let trackName: String?
     let artistName: String?
     let collectionName: String?
+    let trackViewUrl: String?
+    let previewUrl: String?
     let primaryGenreName: String?
     let artistId: Int?
     let collectionId: Int?
@@ -1600,10 +1969,11 @@ struct iTunesSong: Codable, Identifiable {
 extension SongMetadata {
     
     
-    static func searchiTunes(query: String) async -> [iTunesSong] {
+    static func searchiTunes(query: String, limit: Int = 10) async -> [iTunesSong] {
         let region = UserDefaults.standard.string(forKey: "storeRegion") ?? "US"
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        guard let url = URL(string: "https://itunes.apple.com/search?term=\(encodedQuery)&entity=song&limit=10&country=\(region)") else {
+        let boundedLimit = min(max(limit, 1), 200)
+        guard let url = URL(string: "https://itunes.apple.com/search?term=\(encodedQuery)&entity=song&limit=\(boundedLimit)&country=\(region)") else {
             return []
         }
         
@@ -1757,6 +2127,8 @@ struct DeezerSearchResult: Codable {
 struct DeezerSong: Codable, Identifiable {
     let id: Int
     let title: String
+    let link: String?
+    let preview: String?
     let artist: DeezerReference
     let album: DeezerAlbumReference
     let duration: Int
@@ -1789,9 +2161,11 @@ struct DeezerTrackDetails: Codable {
 extension SongMetadata {
     
     
-    static func searchDeezer(query: String) async -> [DeezerSong] {
+    static func searchDeezer(query: String, limit: Int = 10, index: Int = 0) async -> [DeezerSong] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        guard let url = URL(string: "https://api.deezer.com/search?q=\(encodedQuery)&limit=10") else {
+        let boundedLimit = min(max(limit, 1), 100)
+        let boundedIndex = max(index, 0)
+        guard let url = URL(string: "https://api.deezer.com/search?q=\(encodedQuery)&limit=\(boundedLimit)&index=\(boundedIndex)") else {
             return []
         }
         
@@ -1941,7 +2315,8 @@ actor AppleMusicAPI {
     }
     
     struct AppleMusicSearchResponse: Codable {
-        let results: AppleMusicSearchResults
+        let results: AppleMusicSearchResults?
+        let errors: [AppleMusicAPIErrorPayload]?
     }
     
     struct AppleMusicSearchResults: Codable {
@@ -1950,6 +2325,14 @@ actor AppleMusicAPI {
     
     struct AppleMusicSongsPage: Codable {
         let data: [AppleMusicSong]
+    }
+
+    struct AppleMusicAPIErrorPayload: Codable {
+        let id: String?
+        let title: String?
+        let detail: String?
+        let status: String?
+        let code: String?
     }
     
     struct AppleMusicSong: Codable, Identifiable {
@@ -1963,6 +2346,7 @@ actor AppleMusicAPI {
         let artistName: String
         let albumName: String?
         let url: String?
+        let audioTraits: [String]?
         let genreNames: [String]?
         let isrc: String?
         let contentRating: String?
@@ -1970,6 +2354,8 @@ actor AppleMusicAPI {
         let trackNumber: Int?
         let discNumber: Int?
         let durationInMillis: Int?
+        let isAppleDigitalMaster: Bool?
+        let isMasteredForItunes: Bool?
         let artwork: AppleMusicArtwork?
     }
     
@@ -2035,7 +2421,7 @@ actor AppleMusicAPI {
         let data: [AppleMusicSong]
     }
     
-    func searchSongs(query: String, limit: Int = 5) async -> [AppleMusicSong] {
+    func searchSongs(query: String, limit: Int = 5, offset: Int = 0) async -> [AppleMusicSong] {
         guard let token = await getToken() else { return [] }
         
         let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
@@ -2044,6 +2430,7 @@ actor AppleMusicAPI {
             URLQueryItem(name: "term", value: query),
             URLQueryItem(name: "types", value: "songs"),
             URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
             URLQueryItem(name: "include[songs]", value: "albums,artists,composers,genres")
         ]
         
@@ -2055,7 +2442,21 @@ actor AppleMusicAPI {
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             let result = try JSONDecoder().decode(AppleMusicSearchResponse.self, from: data)
-            return result.results.songs?.data ?? []
+            if let songs = result.results?.songs?.data {
+                return songs
+            }
+
+            if let firstError = result.errors?.first {
+                let summary = [firstError.status, firstError.code, firstError.title, firstError.detail]
+                    .compactMap { $0 }
+                    .joined(separator: " | ")
+                await Logger.shared.log("[AppleMusicAPI] Search returned no songs results: \(summary)")
+            } else if let payload = String(data: data.prefix(300), encoding: .utf8) {
+                await Logger.shared.log("[AppleMusicAPI] Search returned no songs results. Payload preview: \(payload)")
+            } else {
+                await Logger.shared.log("[AppleMusicAPI] Search returned no songs results.")
+            }
+            return []
         } catch {
             await Logger.shared.log("[AppleMusicAPI] Search failed: \(error)")
             return []
@@ -2063,7 +2464,7 @@ actor AppleMusicAPI {
     }
 
     func searchSong(query: String) async -> AppleMusicSong? {
-        return await searchSongs(query: query, limit: 1).first
+        return await searchSongs(query: query, limit: 1, offset: 0).first
     }
 
     func fetchSong(id: String) async -> AppleMusicSong? {

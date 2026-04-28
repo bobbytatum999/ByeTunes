@@ -8,6 +8,7 @@ struct SettingsView: View {
     
     @State private var showingPairingPicker = false
     @State private var showingDownloadFolderPicker = false
+    @State private var showingDownloaderSettings = false
     @State private var showingDeleteAlert = false
     
     @State private var showingLogViewer = false
@@ -21,6 +22,7 @@ struct SettingsView: View {
     @State private var snapshotProgressMessage = "Preparing..."
     @State private var snapshotProgress: Double? = nil
     @State private var isFixingArtwork = false
+    @State private var isRebuildingAlbumArtwork = false
     @State private var artworkFixMessage = "Fixing artwork..."
     @State private var artworkFixProgress: Double? = nil
     @State private var snapshots: [DeviceManager.DatabaseSnapshotInfo] = []
@@ -40,6 +42,11 @@ struct SettingsView: View {
     @AppStorage("keepDownloadedSongs") private var keepDownloadedSongs = false
     @AppStorage("fullBackupSnapshots") private var fullBackupSnapshots = false
     @AppStorage("downloadServer") private var downloadServer = DownloaderServerPreference.auto.rawValue
+    @AppStorage("downloadSearchProvider") private var downloadSearchProvider = DownloadSearchProviderOption.appleMusic.rawValue
+    @AppStorage("autoDownloadTier") private var autoDownloadTier = "high"
+    @AppStorage("yoinkifyFormat") private var yoinkifyFormat = "flac"
+    @AppStorage("qobuzFallbackQuality") private var qobuzFallbackQuality = "27"
+    @AppStorage("tidalFallbackQuality") private var tidalFallbackQuality = "LOSSLESS"
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -114,7 +121,7 @@ struct SettingsView: View {
                                     .foregroundColor(.secondary)
                                 
                                 Button {
-                                    manager.startHeartbeat()
+                                    manager.startHeartbeat(forceReconnect: true)
                                 } label: {
                                     Text("Refresh")
                                         .font(.caption.weight(.semibold))
@@ -238,170 +245,6 @@ struct SettingsView: View {
                 
                 
                 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("METADATA")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(.secondary)
-                        .tracking(0.5)
-                    
-                    VStack(spacing: 0) {
-                        HStack {
-                            Image(systemName: "wand.and.stars")
-                                .font(.body)
-                                .foregroundColor(.primary)
-                                .frame(width: 28)
-                            
-                            Text("Metadata Source")
-                                .font(.body)
-                            
-                            Spacer()
-                            
-                            Picker("Metadata Source", selection: $metadataSource) {
-                                Text("Local Files").tag("local")
-                                Text("iTunes API").tag("itunes")
-                                Text("Deezer API").tag("deezer")
-                                Text("Apple Music").tag("apple")
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                        }
-                        .padding(.vertical, 14)
-                        .padding(.horizontal, 16)
-                        
-                        if metadataSource != "apple" {
-                            Divider().padding(.leading, 56)
-                            
-                            Toggle(isOn: $appleRichMetadata) {
-                                HStack {
-                                    Image(systemName: "sparkles")
-                                        .font(.body)
-                                        .foregroundColor(.orange)
-                                        .frame(width: 28)
-                                    
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Rich Apple Metadata")
-                                            .font(.body)
-                                        Text("Fetch Store IDs, XID, and Copyright info")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                        }
-                        
-                        if metadataSource == "itunes" || metadataSource == "deezer" || metadataSource == "apple" {
-                            Divider().padding(.leading, 56)
-                            
-                            Toggle(isOn: $autofetchMetadata) {
-                                HStack {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                        .font(.body)
-                                        .foregroundColor(.primary)
-                                        .frame(width: 28)
-                                    
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Autofetch")
-                                            .font(.body)
-                                        Text("Automatically fetch metadata on import")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                        }
-                        
-                        if !appleSubscriptionLyrics {
-                            Divider().padding(.leading, 56)
-                            
-                            Toggle(isOn: $fetchLyrics) {
-                                HStack {
-                                    Image(systemName: "quote.bubble.fill")
-                                        .font(.body)
-                                        .foregroundColor(.primary)
-                                        .frame(width: 28)
-                                    
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Fetch Lyrics")
-                                            .font(.body)
-                                        Text("Automatically fetch lyrics from LRCLIB, then Musixmatch, then NetEase")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                        }
-
-                        Divider().padding(.leading, 56)
-
-                        Toggle(isOn: $appleSubscriptionLyrics) {
-                            HStack {
-                                Image(systemName: "music.note.list")
-                                    .font(.body)
-                                    .foregroundColor(.primary)
-                                    .frame(width: 28)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Apple Music Subscription Lyrics")
-                                        .font(.body)
-                                    Text("Use synced Apple Music lyrics for subscribers (internet required).")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-                        .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-                        .padding(.vertical, 10)
-                        .padding(.horizontal, 16)
-                        
-                        if metadataSource == "itunes" {
-                                Divider().padding(.leading, 56)
-                                
-                                HStack {
-                                    Image(systemName: "globe")
-                                        .font(.body)
-                                        .foregroundColor(.primary)
-                                        .frame(width: 28)
-                                    
-                                    Text("Store Region")
-                                        .font(.body)
-                                    
-                                    Spacer()
-                                    
-                                    Picker("Region", selection: $storeRegion) {
-                                        Text("🇺🇸 US").tag("US")
-                                        Text("🇲🇽 MX").tag("MX")
-                                        Text("🇪🇸 ES").tag("ES")
-                                        Text("🇬🇧 GB").tag("GB")
-                                        Text("JP JP").tag("JP")
-                                        Text("🇧🇷 BR").tag("BR")
-                                        Text("🇩🇪 DE").tag("DE")
-                                        Text("🇫🇷 FR").tag("FR")
-                                    }
-                                    .pickerStyle(.menu)
-                                    .labelsHidden()
-                                }
-                                .padding(.vertical, 10)
-                                .padding(.horizontal, 16)
-                            }
-                    }
-                    .background(Color(.systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color(.systemGray5), lineWidth: 1)
-                    )
-                }
-                
                 if manager.supportsIOS26ArtworkRepair {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("IOS 26.4+")
@@ -447,6 +290,45 @@ struct SettingsView: View {
                             }
                             .disabled(isFixingArtwork || !manager.hasValidExpectedPairingFile)
                             .opacity((isFixingArtwork || manager.hasValidExpectedPairingFile) ? 1 : 0.55)
+
+                            Divider().padding(.leading, 56)
+
+                            Button {
+                                rebuildAlbumArtworkExperimental()
+                            } label: {
+                                HStack {
+                                    if isRebuildingAlbumArtwork {
+                                        ProgressView()
+                                            .frame(width: 28)
+                                    } else {
+                                        Image(systemName: "wrench.and.screwdriver")
+                                            .font(.body)
+                                            .foregroundColor(.primary)
+                                            .frame(width: 28)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(isRebuildingAlbumArtwork ? "Running Advanced Artwork & Metadata Fix..." : "Advanced Artwork & Metadata Fix")
+                                            .font(.body)
+                                            .foregroundColor(.primary)
+                                        Text("Deeper repair for missing artwork/info. Can take a while.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    if !isRebuildingAlbumArtwork {
+                                        Image(systemName: "flask")
+                                            .font(.caption)
+                                            .foregroundColor(Color(.systemOrange))
+                                    }
+                                }
+                                .padding(.vertical, 14)
+                                .padding(.horizontal, 16)
+                            }
+                            .disabled(isRebuildingAlbumArtwork || !manager.hasValidExpectedPairingFile)
+                            .opacity((isRebuildingAlbumArtwork || manager.hasValidExpectedPairingFile) ? 1 : 0.55)
                         }
                         .background(Color(.systemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -466,86 +348,31 @@ struct SettingsView: View {
                         .tracking(0.5)
 
                     VStack(spacing: 0) {
-                        HStack {
-                            Image(systemName: "server.rack")
-                                .font(.body)
-                                .foregroundColor(.primary)
-                                .frame(width: 28)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Downloader Server")
-                                    .font(.body)
-                                Text("Choose the backend used for song downloads")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            Spacer()
-
-                            Picker("Downloader Server", selection: $downloadServer) {
-                                ForEach(DownloaderServerPreference.allCases) { server in
-                                    Text(server.displayName).tag(server.rawValue)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                        }
-                        .padding(.vertical, 14)
-                        .padding(.horizontal, 16)
-
-                        Divider().padding(.leading, 56)
-
-                        Toggle(isOn: $keepDownloadedSongs) {
+                        Button {
+                            showingDownloaderSettings = true
+                        } label: {
                             HStack {
-                                Image(systemName: "square.and.arrow.down.on.square")
+                                Image(systemName: "arrow.down.circle")
                                     .font(.body)
                                     .foregroundColor(.primary)
                                     .frame(width: 28)
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Keep Downloaded Songs")
+                                    Text("Metadata & Download Settings")
                                         .font(.body)
-                                    Text("Store downloaded tracks in app Documents folder")
+                                    Text("Metadata source, downloader, quality, and saved downloads")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(Color(.systemGray3))
                             }
-                        }
-                        .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-                        .padding(.vertical, 10)
-                        .padding(.horizontal, 16)
-
-                        if keepDownloadedSongs {
-                            Divider().padding(.leading, 56)
-
-                            Button {
-                                showingDownloadFolderPicker = true
-                            } label: {
-                                HStack {
-                                    Image(systemName: "folder")
-                                        .font(.body)
-                                        .foregroundColor(.primary)
-                                        .frame(width: 28)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Download Folder")
-                                            .font(.body)
-                                            .foregroundColor(.primary)
-                                        Text(downloadFolderSubtitle)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(2)
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundColor(Color(.systemGray3))
-                                }
-                                .padding(.vertical, 14)
-                                .padding(.horizontal, 16)
-                            }
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 16)
                         }
                     }
                     .background(Color(.systemBackground))
@@ -1032,6 +859,27 @@ struct SettingsView: View {
                 handleDownloadFolderSelection(url: url)
             }
         }
+        .sheet(isPresented: $showingDownloaderSettings) {
+            NavigationStack {
+                DownloaderSettingsScreen(
+                    metadataSource: $metadataSource,
+                    autofetchMetadata: $autofetchMetadata,
+                    fetchLyrics: $fetchLyrics,
+                    appleSubscriptionLyrics: $appleSubscriptionLyrics,
+                    storeRegion: $storeRegion,
+                    appleRichMetadata: $appleRichMetadata,
+                    downloadServer: $downloadServer,
+                    downloadSearchProvider: $downloadSearchProvider,
+                    keepDownloadedSongs: $keepDownloadedSongs,
+                    showingDownloadFolderPicker: $showingDownloadFolderPicker,
+                    autoDownloadTier: $autoDownloadTier,
+                    yoinkifyFormat: $yoinkifyFormat,
+                    qobuzFallbackQuality: $qobuzFallbackQuality,
+                    tidalFallbackQuality: $tidalFallbackQuality,
+                    downloadFolderSubtitle: downloadFolderSubtitle
+                )
+            }
+        }
         .sheet(isPresented: $showingLogViewer) {
             LogViewer()
         }
@@ -1055,10 +903,13 @@ struct SettingsView: View {
             Text("This will permanently delete your Music library database and playlists from the device. This action cannot be undone.")
         }
         .onAppear {
+            if downloadSearchProvider == DownloadSearchProviderOption.tidal.rawValue {
+                downloadSearchProvider = DownloadSearchProviderOption.appleMusic.rawValue
+            }
             refreshSnapshots()
         }
 
-        if isFixingArtwork {
+        if isFixingArtwork || isRebuildingAlbumArtwork {
             artworkFixPopup
                 .zIndex(90)
         }
@@ -1093,6 +944,10 @@ struct SettingsView: View {
         } // ZStack
     } // body
 
+    private var isExperimentalArtworkRefreshActive: Bool {
+        isRebuildingAlbumArtwork && !isFixingArtwork
+    }
+
     private var artworkFixPopup: some View {
         ZStack {
             Color.black.opacity(0.28)
@@ -1104,13 +959,13 @@ struct SettingsView: View {
                         .fill(Color.accentColor.opacity(0.12))
                         .frame(width: 58, height: 58)
 
-                    Image(systemName: "photo.on.rectangle.angled")
+                    Image(systemName: isExperimentalArtworkRefreshActive ? "wand.and.stars" : "photo.on.rectangle.angled")
                         .font(.system(size: 25, weight: .semibold))
                         .foregroundColor(.accentColor)
                 }
 
                 VStack(spacing: 6) {
-                    Text("Fixing Artwork")
+                    Text(isExperimentalArtworkRefreshActive ? "Refreshing Metadata & Artwork" : "Fixing Artwork")
                         .font(.headline)
                         .foregroundColor(.primary)
 
@@ -1393,6 +1248,26 @@ struct SettingsView: View {
         }
     }
 
+    private func rebuildAlbumArtworkExperimental() {
+        isRebuildingAlbumArtwork = true
+        updateArtworkFixProgress("Running advanced artwork and metadata fix...")
+
+        manager.repairExperimentalAlbumArtworkPointers { message in
+            DispatchQueue.main.async {
+                self.updateArtworkFixProgress(message)
+            }
+        } completion: { success, message in
+            DispatchQueue.main.async {
+                self.isRebuildingAlbumArtwork = false
+                self.updateArtworkFixProgress(message)
+                self.showToastMessage(
+                    title: success ? message : "Advanced Artwork & Metadata Fix Failed: \(message)",
+                    icon: success ? "checkmark.circle.fill" : "xmark.circle.fill"
+                )
+            }
+        }
+    }
+
     private func updateArtworkFixProgress(_ message: String) {
         status = message
         artworkFixMessage = message.isEmpty ? "Fixing artwork..." : message
@@ -1476,6 +1351,568 @@ struct SettingsView: View {
             showToastMessage(title: "Download Folder Updated", icon: "folder.badge.checkmark")
         } catch {
             showToastMessage(title: "Folder Selection Failed", icon: "exclamationmark.triangle.fill")
+        }
+    }
+}
+
+private struct DownloaderSettingsScreen: View {
+    @Binding var metadataSource: String
+    @Binding var autofetchMetadata: Bool
+    @Binding var fetchLyrics: Bool
+    @Binding var appleSubscriptionLyrics: Bool
+    @Binding var storeRegion: String
+    @Binding var appleRichMetadata: Bool
+    @Binding var downloadServer: String
+    @Binding var downloadSearchProvider: String
+    @Binding var keepDownloadedSongs: Bool
+    @Binding var showingDownloadFolderPicker: Bool
+    @Binding var autoDownloadTier: String
+    @Binding var yoinkifyFormat: String
+    @Binding var qobuzFallbackQuality: String
+    @Binding var tidalFallbackQuality: String
+
+    let downloadFolderSubtitle: String
+
+    private var selectedServer: DownloaderServerPreference {
+        DownloaderServerPreference(rawValue: downloadServer) ?? .auto
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("METADATA")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                        .tracking(0.5)
+
+                    VStack(spacing: 0) {
+                        serverPickerRow(
+                            icon: "wand.and.stars",
+                            title: "Import Metadata Source",
+                            subtitle: "Choose how imported songs get matched and enriched",
+                            selection: $metadataSource,
+                            options: MetadataSourceOption.allCases
+                        )
+
+                        if metadataSource != "apple" {
+                            Divider().padding(.leading, 56)
+
+                            Toggle(isOn: $appleRichMetadata) {
+                                HStack {
+                                    Image(systemName: "sparkles")
+                                        .font(.body)
+                                        .foregroundColor(.orange)
+                                        .frame(width: 28)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Rich Apple Metadata")
+                                            .font(.body)
+                                        Text("Fetch Store IDs, XID, and copyright details")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
+                        }
+
+                        if metadataSource == "itunes" || metadataSource == "deezer" || metadataSource == "apple" {
+                            Divider().padding(.leading, 56)
+
+                            Toggle(isOn: $autofetchMetadata) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .frame(width: 28)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Autofetch")
+                                            .font(.body)
+                                        Text("Automatically fetch metadata on import")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
+                        }
+
+                        if !appleSubscriptionLyrics {
+                            Divider().padding(.leading, 56)
+
+                            Toggle(isOn: $fetchLyrics) {
+                                HStack {
+                                    Image(systemName: "quote.bubble.fill")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .frame(width: 28)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Fetch Lyrics")
+                                            .font(.body)
+                                        Text("Automatically fetch lyrics from LRCLIB, then Musixmatch, then NetEase")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
+                        }
+
+                        Divider().padding(.leading, 56)
+
+                        Toggle(isOn: $appleSubscriptionLyrics) {
+                            HStack {
+                                Image(systemName: "music.note.list")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                    .frame(width: 28)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Apple Music Subscription Lyrics")
+                                        .font(.body)
+                                    Text("Use synced Apple Music lyrics for subscribers (internet required)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+
+                        if metadataSource == "itunes" {
+                            Divider().padding(.leading, 56)
+
+                            serverPickerRow(
+                                icon: "globe",
+                                title: "Store Region",
+                                subtitle: "Select the storefront used for iTunes metadata lookups",
+                                selection: $storeRegion,
+                                options: MetadataStoreRegionOption.allCases
+                            )
+                        }
+                    }
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color(.systemGray5), lineWidth: 1)
+                    )
+
+                    Text("DOWNLOADS")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                        .tracking(0.5)
+
+                    VStack(spacing: 0) {
+                        serverPickerRow(
+                            icon: "magnifyingglass",
+                            title: "Search Source",
+                            subtitle: "Choose where the Download tab searches for results",
+                            selection: $downloadSearchProvider,
+                            options: DownloadSearchProviderOption.allCases
+                        )
+
+                        Divider().padding(.leading, 56)
+
+                        HStack {
+                            Image(systemName: "server.rack")
+                                .font(.body)
+                                .foregroundColor(.primary)
+                                .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Downloader Server")
+                                    .font(.body)
+                                Text("Choose the backend used for song downloads")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            Picker("Downloader Server", selection: $downloadServer) {
+                                ForEach(DownloaderServerPreference.allCases) { server in
+                                    Text(server.displayName).tag(server.rawValue)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                        }
+                        .padding(.vertical, 14)
+                        .padding(.horizontal, 16)
+
+                        Divider().padding(.leading, 56)
+
+                        Toggle(isOn: $keepDownloadedSongs) {
+                            HStack {
+                                Image(systemName: "square.and.arrow.down.on.square")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                    .frame(width: 28)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Keep Downloaded Songs")
+                                        .font(.body)
+                                    Text("Store downloaded tracks in app Documents folder")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+
+                        if keepDownloadedSongs {
+                            Divider().padding(.leading, 56)
+
+                            Button {
+                                showingDownloadFolderPicker = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "folder")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .frame(width: 28)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Download Folder")
+                                            .font(.body)
+                                            .foregroundColor(.primary)
+                                        Text(downloadFolderSubtitle)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(2)
+                                    }
+
+                                    Spacer()
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(Color(.systemGray3))
+                                }
+                                .padding(.vertical, 14)
+                                .padding(.horizontal, 16)
+                            }
+                        }
+                    }
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color(.systemGray5), lineWidth: 1)
+                    )
+
+                    if selectedServer == .auto {
+                        Text("AUTO")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .tracking(0.5)
+                            .padding(.top, 8)
+
+                        VStack(spacing: 0) {
+                            serverPickerRow(
+                                icon: "dial.low",
+                                title: "Automatic Quality",
+                                subtitle: "Controls both the Yoinkify attempt and the fallback chain",
+                                selection: $autoDownloadTier,
+                                options: DownloaderAutoTierOption.allCases
+                            )
+
+                            Divider().padding(.leading, 56)
+
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: "info.circle")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                    .frame(width: 28)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Quality Mapping")
+                                        .font(.body)
+                                    Text(autoTierExplanation)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 16)
+                        }
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.systemGray5), lineWidth: 1)
+                        )
+                    }
+
+                    if selectedServer == .yoinkify {
+                        Text("YOINKIFY")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .tracking(0.5)
+                            .padding(.top, 8)
+
+                        VStack(spacing: 0) {
+                            serverPickerRow(
+                                icon: "sparkles.rectangle.stack",
+                                title: "Output Format",
+                                subtitle: "Choose the direct download format for Yoinkify",
+                                selection: $yoinkifyFormat,
+                                options: DownloaderYoinkifyFormatOption.allCases
+                            )
+                        }
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.systemGray5), lineWidth: 1)
+                        )
+                    }
+
+                    if selectedServer == .qobuz {
+                        Text("QOBUZ")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .tracking(0.5)
+                            .padding(.top, 8)
+
+                        VStack(spacing: 0) {
+                            serverPickerRow(
+                                icon: "music.note.house",
+                                title: "Track Quality",
+                                subtitle: "Quality parameter used for the Qobuz fallback chain",
+                                selection: $qobuzFallbackQuality,
+                                options: DownloaderQobuzQualityOption.allCases
+                            )
+                        }
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.systemGray5), lineWidth: 1)
+                        )
+                    }
+
+                    if selectedServer == .hifiOne || selectedServer == .hifiTwo {
+                        Text(selectedServer == .hifiOne ? "HIFI ONE" : "HIFI TWO")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                            .tracking(0.5)
+                            .padding(.top, 8)
+
+                        VStack(spacing: 0) {
+                            serverPickerRow(
+                                icon: "waveform",
+                                title: "Track Quality",
+                                subtitle: "Quality parameter used for the selected Tidal backend",
+                                selection: $tidalFallbackQuality,
+                                options: DownloaderTidalQualityOption.allCases
+                            )
+                        }
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.systemGray5), lineWidth: 1)
+                        )
+                    }
+
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+            }
+        }
+        .navigationTitle("Metadata & Downloads")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func serverPickerRow<Option: Identifiable & CustomStringConvertible>(
+        icon: String,
+        title: String,
+        subtitle: String,
+        selection: Binding<String>,
+        options: [Option]
+    ) -> some View where Option: RawRepresentable, Option.RawValue == String {
+        HStack {
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundColor(.primary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Picker(title, selection: selection) {
+                ForEach(options) { option in
+                    Text(option.description).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+    }
+
+    private var autoTierExplanation: String {
+        switch DownloaderAutoTierOption(rawValue: autoDownloadTier) ?? .high {
+        case .low:
+            return "Low tries MP3 from Yoinkify first, then Qobuz lossless, then low-quality Tidal fallback."
+        case .medium:
+            return "Medium keeps the fast Yoinkify path, then uses Qobuz hi-res, then high-quality Tidal fallback."
+        case .high:
+            return "High prefers FLAC from Yoinkify, then uses max Qobuz quality, then falls back to lossless Tidal."
+        }
+    }
+}
+
+private enum MetadataSourceOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case local
+    case itunes
+    case deezer
+    case apple
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .local: return "Local Files"
+        case .itunes: return "iTunes API"
+        case .deezer: return "Deezer API"
+        case .apple: return "Apple Music"
+        }
+    }
+}
+
+private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case appleMusic
+    case tidal
+    case metadata
+
+    static var allCases: [DownloadSearchProviderOption] {
+        [.appleMusic, .metadata]
+    }
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .appleMusic: return "Apple Music"
+        case .tidal: return "Tidal"
+        case .metadata: return "iTunes + Deezer"
+        }
+    }
+}
+
+private enum MetadataStoreRegionOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case us = "US"
+    case mx = "MX"
+    case es = "ES"
+    case gb = "GB"
+    case jp = "JP"
+    case br = "BR"
+    case de = "DE"
+    case fr = "FR"
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .us: return "US"
+        case .mx: return "MX"
+        case .es: return "ES"
+        case .gb: return "GB"
+        case .jp: return "JP"
+        case .br: return "BR"
+        case .de: return "DE"
+        case .fr: return "FR"
+        }
+    }
+}
+
+private enum DownloaderAutoTierOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case low
+    case medium
+    case high
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
+}
+
+private enum DownloaderYoinkifyFormatOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case mp3
+    case flac
+    case alac
+
+    var id: String { rawValue }
+    var description: String { rawValue.uppercased() }
+}
+
+private enum DownloaderTidalQualityOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case low = "LOW"
+    case high = "HIGH"
+    case lossless = "LOSSLESS"
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .low: return "Low"
+        case .high: return "High"
+        case .lossless: return "Lossless"
+        }
+    }
+}
+
+private enum DownloaderQobuzQualityOption: String, CaseIterable, Identifiable, CustomStringConvertible {
+    case lossless = "6"
+    case hiRes = "7"
+    case hiResMax = "27"
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .lossless: return "Lossless"
+        case .hiRes: return "Hi-Res"
+        case .hiResMax: return "Max Hi-Res"
         }
     }
 }

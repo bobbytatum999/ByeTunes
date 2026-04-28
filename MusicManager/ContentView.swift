@@ -9,7 +9,7 @@ struct AppUpdateInfo: Identifiable, Equatable {
 }
 
 enum AppUpdateChecker {
-    static let currentVersion = "2.1"
+    static let currentVersion = "2.2"
     static let releasesURL = URL(string: "https://github.com/EduAlexxis/ByeTunes/releases")!
 
     private struct GitHubRelease: Decodable {

@@ -543,6 +543,31 @@ struct MusicView: View {
                 let ext = url.pathExtension.lowercased()
                 return ["mp3", "wav", "aiff", "m4a", "flac"].contains(ext)
             }
+
+            func cleanedFallbackImportName(from url: URL) -> String {
+                let raw = url.deletingPathExtension().lastPathComponent
+                let patterns = [
+                    #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}[ _-]+"#,
+                    #"^[0-9A-Fa-f]{8,}(?:-[0-9A-Fa-f]{2,})+[ _-]+"#,
+                    #"^[0-9]{6,}[ _-]+"#,
+                    #"^[0-9A-Fa-f]{10,}[ _-]+"#
+                ]
+
+                var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                var didStrip = true
+                while didStrip {
+                    didStrip = false
+                    for pattern in patterns {
+                        let updated = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+                        if updated != cleaned {
+                            cleaned = updated.trimmingCharacters(in: .whitespacesAndNewlines)
+                            didStrip = true
+                        }
+                    }
+                }
+
+                return cleaned.isEmpty ? raw : cleaned
+            }
             
             func stageFile(_ sourceURL: URL) {
                 guard isSupportedAudio(sourceURL) else { return }
@@ -585,9 +610,10 @@ struct MusicView: View {
                     song = parsed
                 } else {
                     let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int) ?? 0
+                    let cleanedName = cleanedFallbackImportName(from: localURL)
                     song = SongMetadata(
                         localURL: localURL,
-                        title: localURL.deletingPathExtension().lastPathComponent,
+                        title: cleanedName.isEmpty ? localURL.deletingPathExtension().lastPathComponent : cleanedName,
                         artist: "Unknown Artist",
                         album: "Unknown Album",
                         albumArtist: nil,
@@ -822,7 +848,7 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs // Keep a copy for cleanup
+        let songsToInfect = songs 
         
         manager.injectSongs(songs: songsToInfect, progress: { progressText in
             DispatchQueue.main.async {
@@ -1275,7 +1301,7 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs // Keep a copy for cleanup
+        let songsToInfect = songs
         
         manager.injectSongsAsPlaylist(songs: songsToInfect, playlistName: name, targetPlaylistPid: pid, progress: { progressText in
             DispatchQueue.main.async {

@@ -670,7 +670,7 @@ class MediaLibraryBuilder {
                 albumArtists[effectiveAlbumArtistName] = newPid
                 newAlbumArtists[effectiveAlbumArtistName] = newPid
                 albumArtistRepItem[effectiveAlbumArtistName] = itemPid  
-                albumArtistStoreIds[effectiveAlbumArtistName] = song.artistId // Use artistId since AA is usually artist
+                albumArtistStoreIds[effectiveAlbumArtistName] = song.artistId
                 albumArtistPid = newPid
             }
             
@@ -687,7 +687,7 @@ class MediaLibraryBuilder {
                 albums[song.album] = (pid: newPid, year: song.year)
                 newAlbums[song.album] = newPid
                 albumRepItem[song.album] = itemPid  
-                albumStoreIds[song.album] = song.playlistId // Remember playlistId was mapped from collectionId
+                albumStoreIds[song.album] = song.playlistId
                 albumPid = newPid
             }
             
@@ -777,14 +777,18 @@ class MediaLibraryBuilder {
             """)
             
             
-            let audioFmt = audioFormatForExtension(URL(fileURLWithPath: song.remoteFilename).pathExtension)
+            let audioFmt = song.playbackAudioFormat != 0
+                ? song.playbackAudioFormat
+                : audioFormatForExtension(URL(fileURLWithPath: song.remoteFilename).pathExtension)
+            let playbackBitRate = song.playbackBitRate > 0 ? song.playbackBitRate : 320
+            let playbackSampleRate = song.playbackSampleRate > 0 ? song.playbackSampleRate : 44100.0
             try executeSQL(db, """
                 INSERT INTO item_playback (
                     item_pid, audio_format, bit_rate, codec_type, codec_subtype, data_kind,
                     duration, has_video, relative_volume, sample_rate
                 ) VALUES (
-                    \(itemPid), \(audioFmt), 320, 0, 0, 0,
-                    0, 0, 0, 44100.0
+                    \(itemPid), \(audioFmt), \(playbackBitRate), \(song.playbackCodecType), \(song.playbackCodecSubtype), 0,
+                    0, 0, 0, \(playbackSampleRate)
                 )
             """)
             
@@ -795,22 +799,39 @@ class MediaLibraryBuilder {
             
             let syncId = SongMetadata.generatePersistentId()
             let storeXidEscaped = song.xid?.replacingOccurrences(of: "'", with: "''") ?? ""
+            let combinedAudioTraits = Array(Set(
+                song.appleMusicAudioTraits +
+                (song.localFileHasDolbyAtmos ? ["atmos"] : []) +
+                (song.localFileHasSpatialAudio ? ["spatial"] : [])
+            ))
+            let storeFlavorEscaped = combinedAudioTraits
+                .sorted()
+                .joined(separator: ",")
+                .replacingOccurrences(of: "'", with: "''")
+            let subscriptionStoreItemId = (song.isDolbyAtmosCapable || song.hasSpatialAudioTrait) && song.storeId > 0
+                ? song.storeId
+                : 0
+            let masteredForItunes = (song.isMasteredForItunes || song.isAppleDigitalMaster) ? 1 : 0
             try executeSQL(db, """
                 INSERT OR REPLACE INTO item_store (
                     item_pid, sync_id, sync_in_my_library, is_subscription,
                     store_xid, store_item_id, storefront_id,
                     store_composer_id, store_genre_id, store_playlist_id,
-                    date_released
+                    date_released, subscription_store_item_id,
+                    is_mastered_for_itunes, store_flavor
                 ) VALUES (
                     \(itemPid), \(syncId), 1, \(version.isSubscription ? 1 : 0),
                     '\(storeXidEscaped)', \(song.storeId), \(song.storefrontId),
                     \(song.composerId), \(song.genreStoreId), \(song.playlistId),
-                    \(song.releaseDate)
+                    \(song.releaseDate), \(subscriptionStoreItemId),
+                    \(masteredForItunes), '\(storeFlavorEscaped)'
                 )
             """)
-            
-            
-            try executeSQL(db, "INSERT OR REPLACE INTO item_video (item_pid) VALUES (\(itemPid))")
+            let hlsAssetTraits = song.isDolbyAtmosCapable ? 32 : 0
+            try executeSQL(db, """
+                INSERT OR REPLACE INTO item_video (item_pid, hls_asset_traits)
+                VALUES (\(itemPid), \(hlsAssetTraits))
+            """)
             
             
             try executeSQL(db, """
@@ -823,10 +844,17 @@ class MediaLibraryBuilder {
             let resolvedLyricsText = appleSubscriptionLyrics ? "" : SongMetadata.cleanLyrics(song.lyrics ?? "", title: song.title, artist: song.artist)
             let lyricsContent = resolvedLyricsText.replacingOccurrences(of: "'", with: "''")
 
-            try executeSQL(db, """
-                INSERT OR REPLACE INTO lyrics (item_pid, lyrics, store_lyrics_available, time_synced_lyrics_available, downloaded_catalog_lyrics_available) 
-                VALUES (\(itemPid), '\(lyricsContent)', 1, 1, 0)
-            """)
+            if columnExists(db: db, tableName: "lyrics", columnName: "downloaded_catalog_lyrics_available") {
+                try executeSQL(db, """
+                    INSERT OR REPLACE INTO lyrics (item_pid, lyrics, store_lyrics_available, time_synced_lyrics_available, downloaded_catalog_lyrics_available)
+                    VALUES (\(itemPid), '\(lyricsContent)', 1, 1, 0)
+                """)
+            } else {
+                try executeSQL(db, """
+                    INSERT OR REPLACE INTO lyrics (item_pid, lyrics, store_lyrics_available, time_synced_lyrics_available)
+                    VALUES (\(itemPid), '\(lyricsContent)', 1, 1)
+                """)
+            }
             
             try executeSQL(db, "INSERT OR REPLACE INTO chapter (item_pid) VALUES (\(itemPid))")
             
