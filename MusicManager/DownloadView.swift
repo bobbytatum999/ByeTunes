@@ -3059,7 +3059,7 @@ final class DownloadViewModel: ObservableObject {
                 !playlistResults.contains(where: { $0.id == incoming.id })
             })
             canLoadMorePlaylists = playlists.count == playlistPageSize
-        case .tidal, .metadata:
+        case .tidal, .metadata, .youtube:
             canLoadMorePlaylists = false
 
         case .all:
