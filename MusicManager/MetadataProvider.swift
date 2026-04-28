@@ -191,6 +191,18 @@ enum MetadataProvider {
         }
     }
 
+    /// Fetches JSON from a URLRequest and returns it as `[[String: Any]]`.
+    private static func fetchJSONArray(for request: URLRequest) async -> [[String: Any]]? {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        } catch {
+            Logger.shared.log("[MetadataProvider] fetchJSONArray failed for \(request.url?.absoluteString ?? "nil"): \(error)")
+            return nil
+        }
+    }
+
     /// Fetches JSON from a URLRequest and returns it as `[String: Any]`.
     private static func fetchJSONDictionary(for request: URLRequest) async -> [String: Any]? {
         do {
@@ -205,7 +217,7 @@ enum MetadataProvider {
 
     // MARK: - Title Normalization
 
-    static func normalizeYouTubeTitle(_ rawTitle: String, channel: String) -> PartialSongMetadata {
+    nonisolated static func normalizeYouTubeTitle(_ rawTitle: String, channel: String) -> PartialSongMetadata {
         let cleaned = rawTitle
             .replacingOccurrences(of: "(Official Video)", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "(Official Audio)", with: "", options: .caseInsensitive)
@@ -241,7 +253,7 @@ enum MetadataProvider {
 
     // MARK: - Video ID Extraction
 
-    static func extractYouTubeVideoID(from urlString: String) -> String? {
+    nonisolated static func extractYouTubeVideoID(from urlString: String) -> String? {
         let patterns = [
             #"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|music\.youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})"#,
             #"^/?watch\?v=([a-zA-Z0-9_-]{11})"#,          // Relative /watch?v=... (Piped, etc.)
@@ -323,10 +335,19 @@ enum MetadataProvider {
                 let author = json["author"] as? String ?? ""
                 let lengthSeconds = json["lengthSeconds"] as? Int
                 let videoThumbnails = json["videoThumbnails"] as? [[String: Any]]
-                let bestThumbnail = videoThumbnails?.first { ($0["quality"] as? String) == "maxresdefault" }
-                    ?? videoThumbnails?.first { ($0["quality"] as? String) == "high" }
-                    ?? videoThumbnails?.first { ($0["quality"] as? String) == "medium" }
-                    ?? videoThumbnails?.first
+                var bestThumbnail: [String: Any]? = nil
+                if let thumbs = videoThumbnails {
+                    bestThumbnail = thumbs.first { ($0["quality"] as? String) == "maxresdefault" }
+                    if bestThumbnail == nil {
+                        bestThumbnail = thumbs.first { ($0["quality"] as? String) == "high" }
+                    }
+                    if bestThumbnail == nil {
+                        bestThumbnail = thumbs.first { ($0["quality"] as? String) == "medium" }
+                    }
+                    if bestThumbnail == nil {
+                        bestThumbnail = thumbs.first
+                    }
+                }
                 let thumbnailURL = bestThumbnail?["url"] as? String
 
                 if !title.isEmpty || !author.isEmpty {
@@ -351,12 +372,8 @@ enum MetadataProvider {
             if let json = await fetchJSONDictionary(from: url) {
                 let title = json["title"] as? String ?? ""
                 let uploader = json["uploader"] as? String ?? ""
-                let uploaderVerified = json["uploaderVerified"] as? Bool ?? false
                 let thumbnailURL = json["thumbnailUrl"] as? String
-                let uploadDate = json["uploadDate"] as? String
                 let duration = json["duration"] as? Int
-
-                // Piped tags are not always present; description is
                 let description = json["description"] as? String
 
                 if !title.isEmpty || !uploader.isEmpty {
@@ -473,10 +490,19 @@ enum MetadataProvider {
                     let author = item["author"] as? String ?? ""
                     let lengthSeconds = item["lengthSeconds"] as? Int
                     let videoThumbnails = item["videoThumbnails"] as? [[String: Any]]
-                    let bestThumbnail = videoThumbnails?.first { ($0["quality"] as? String) == "maxresdefault" }
-                        ?? videoThumbnails?.first { ($0["quality"] as? String) == "high" }
-                        ?? videoThumbnails?.first { ($0["quality"] as? String) == "medium" }
-                        ?? videoThumbnails?.first
+                    var bestThumbnail: [String: Any]? = nil
+                    if let thumbs = videoThumbnails {
+                        bestThumbnail = thumbs.first { ($0["quality"] as? String) == "maxresdefault" }
+                        if bestThumbnail == nil {
+                            bestThumbnail = thumbs.first { ($0["quality"] as? String) == "high" }
+                        }
+                        if bestThumbnail == nil {
+                            bestThumbnail = thumbs.first { ($0["quality"] as? String) == "medium" }
+                        }
+                        if bestThumbnail == nil {
+                            bestThumbnail = thumbs.first
+                        }
+                    }
                     let thumbnailURL = bestThumbnail?["url"] as? String
 
                     if !title.isEmpty || !author.isEmpty {
