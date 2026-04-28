@@ -543,13 +543,17 @@ class DeviceManager: ObservableObject {
             }
             
             if requiresRPPairingTunnel {
+                defer {
+                    heartbeat_client_free(hbClient)
+                    if sessionID == heartbeatSessionID {
+                        resetConnectionHandles()
+                    }
+                }
                 while !Thread.current.isCancelled && sessionID == heartbeatSessionID {
                     Thread.sleep(forTimeInterval: 5)
                 }
 
-                heartbeat_client_free(hbClient)
                 if sessionID == heartbeatSessionID {
-                    resetConnectionHandles()
                     completion(true)
                 }
                 return
@@ -557,6 +561,12 @@ class DeviceManager: ObservableObject {
             
             
             var consecutivePoloFailures = 0
+            defer {
+                heartbeat_client_free(hbClient)
+                if sessionID == heartbeatSessionID {
+                    resetConnectionHandles()
+                }
+            }
             while !Thread.current.isCancelled && sessionID == heartbeatSessionID {
                 var newInterval: UInt64 = 0
                 let marcoErr = heartbeat_get_marco(hbClient, 10, &newInterval)
@@ -588,9 +598,7 @@ class DeviceManager: ObservableObject {
             }
             
             
-            heartbeat_client_free(hbClient)
             if sessionID == heartbeatSessionID {
-                resetConnectionHandles()
                 completion(true)
             }
         } else {

@@ -527,8 +527,7 @@ struct MusicView: View {
     func handleMusicImport(urls: [URL]?) {
         guard let urls = urls, !urls.isEmpty else { return }
         
-        let metadataSource = UserDefaults.standard.string(forKey: "metadataSource") ?? "local"
-        let useiTunes = (metadataSource == "itunes")
+        let sources = MetadataProviderSettings.selectedSources()
         let autofetch = UserDefaults.standard.bool(forKey: "autofetchMetadata")
         let fetchLyrics = UserDefaults.standard.bool(forKey: "fetchLyrics")
         
@@ -580,26 +579,59 @@ struct MusicView: View {
                     try FileManager.default.copyItem(at: sourceURL, to: destURL)
                     stagedURLs.append(destURL)
                 } catch {
-                    skippedCount += 1
                     Task { @MainActor in
                         Logger.shared.log("[MusicView] Copy failed for \(safeName): \(error)")
                     }
                     let fallbackURL = stagingDirectory.appendingPathComponent("\(UUID().uuidString)_\(sourceURL.deletingPathExtension().lastPathComponent).\(ext)")
                     if FileManager.default.fileExists(atPath: sourceURL.path) {
-                        do {
-                            let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-                            try data.write(to: fallbackURL, options: .atomic)
+                        let success = copyFileChunked(from: sourceURL, to: fallbackURL)
+                        if success {
                             stagedURLs.append(fallbackURL)
                             Task { @MainActor in
-                                Logger.shared.log("[MusicView] Data fallback copy succeeded for \(safeName)")
+                                Logger.shared.log("[MusicView] Chunked fallback copy succeeded for \(safeName)")
                             }
-                        } catch {
+                        } else {
+                            skippedCount += 1
                             Task { @MainActor in
-                                Logger.shared.log("[MusicView] Data fallback copy failed for \(safeName): \(error)")
+                                Logger.shared.log("[MusicView] Chunked fallback copy failed for \(safeName)")
                             }
+                        }
+                    } else {
+                        skippedCount += 1
+                    }
+                }
+            }
+            
+            func copyFileChunked(from sourceURL: URL, to destURL: URL) -> Bool {
+                guard FileManager.default.fileExists(atPath: sourceURL.path) else { return false }
+                let chunkSize = 1024 * 1024 // 1MB chunks
+                
+                guard let inputStream = InputStream(url: sourceURL),
+                      let outputStream = OutputStream(url: destURL, append: false) else {
+                    return false
+                }
+                
+                inputStream.open()
+                outputStream.open()
+                defer {
+                    inputStream.close()
+                    outputStream.close()
+                }
+                
+                var buffer = [UInt8](repeating: 0, count: chunkSize)
+                while inputStream.hasBytesAvailable {
+                    let bytesRead = inputStream.read(&buffer, maxLength: chunkSize)
+                    if bytesRead < 0 {
+                        return false
+                    }
+                    if bytesRead > 0 {
+                        let bytesWritten = outputStream.write(buffer, maxLength: bytesRead)
+                        if bytesWritten < 0 {
+                            return false
                         }
                     }
                 }
+                return true
             }
             
             func enrichSong(from localURL: URL) async -> SongMetadata {
@@ -632,17 +664,72 @@ struct MusicView: View {
                     await Logger.shared.log("[MusicView] Fallback metadata used for \(localURL.lastPathComponent)")
                 }
                 
-                if metadataSource == "apple" && autofetch {
-                    song = await SongMetadata.enrichWithAppleMusicMetadata(song)
-                } else if useiTunes && autofetch {
-                    song = await SongMetadata.enrichWithiTunesMetadata(song)
-                } else if metadataSource == "deezer" && autofetch {
-                    song = await SongMetadata.enrichWithDeezerMetadata(song)
-                } else if metadataSource == "local" && autofetch {
-                    if UserDefaults.standard.bool(forKey: "appleRichMetadata") {
-                        song = await SongMetadata.matchAppleMusicMetadata(song)
+                var sourcesUsed: [MetadataProviderID] = [.local]
+                
+                if autofetch {
+                    for source in sources {
+                        switch source {
+                        case .local:
+                            if UserDefaults.standard.bool(forKey: "appleRichMetadata") {
+                                let enriched = await SongMetadata.matchAppleMusicMetadata(song)
+                                if enriched.richAppleMetadataFetched {
+                                    song = enriched
+                                    if !sourcesUsed.contains(.apple) {
+                                        sourcesUsed.append(.apple)
+                                    }
+                                }
+                            }
+                        case .youtube:
+                            let filename = localURL.deletingPathExtension().lastPathComponent
+                            if let videoID = MetadataProvider.extractYouTubeVideoID(from: filename) {
+                                if let candidate = await MetadataProvider.fetchYouTubeMetadata(videoID: videoID) {
+                                    let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                                    song.title = parsed.title
+                                    song.artist = parsed.artist
+                                    song.album = parsed.album
+                                    song.youtubeVideoID = videoID
+                                    if let thumbURL = candidate.thumbnailURL,
+                                       let (data, _) = try? await URLSession.shared.data(from: thumbURL) {
+                                        song.artworkData = data
+                                    }
+                                    if let duration = candidate.durationMs, duration > 0 {
+                                        song.durationMs = duration
+                                    }
+                                    if !sourcesUsed.contains(.youtube) {
+                                        sourcesUsed.append(.youtube)
+                                    }
+                                    Logger.shared.log("[MusicView] Enriched from YouTube: \(song.title) - \(song.artist)")
+                                }
+                            }
+                        case .itunes:
+                            let enriched = await SongMetadata.enrichWithiTunesMetadata(song)
+                            if enriched.title != song.title || enriched.artist != song.artist {
+                                song = enriched
+                                if !sourcesUsed.contains(.itunes) {
+                                    sourcesUsed.append(.itunes)
+                                }
+                            }
+                        case .deezer:
+                            let enriched = await SongMetadata.enrichWithDeezerMetadata(song)
+                            if enriched.title != song.title || enriched.artist != song.artist {
+                                song = enriched
+                                if !sourcesUsed.contains(.deezer) {
+                                    sourcesUsed.append(.deezer)
+                                }
+                            }
+                        case .apple:
+                            let enriched = await SongMetadata.enrichWithAppleMusicMetadata(song)
+                            if enriched.richAppleMetadataFetched {
+                                song = enriched
+                                if !sourcesUsed.contains(.apple) {
+                                    sourcesUsed.append(.apple)
+                                }
+                            }
+                        }
                     }
                 }
+                
+                song.metadataSourcesUsed = sourcesUsed
                 
                 let appleSubscriptionLyrics = UserDefaults.standard.bool(forKey: "appleSubscriptionLyrics")
                 if fetchLyrics && !appleSubscriptionLyrics && (song.lyrics == nil || song.lyrics?.isEmpty == true) {
@@ -848,21 +935,18 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs 
+        let songsToInject = songs
+        var injectionSucceededUpTo = 0
         
-        manager.injectSongs(songs: songsToInfect, progress: { progressText in
+        manager.injectSongs(songs: songsToInject, progress: { progressText in
             DispatchQueue.main.async {
                 
                 if let range = progressText.range(of: #"(\d+)/\d+"#, options: .regularExpression),
                    let index = Int(progressText[range].split(separator: "/").first ?? "") {
                     self.currentInjectIndex = index
+                    injectionSucceededUpTo = index
                     
                     self.injectProgress = CGFloat(index) / CGFloat(self.totalInjectCount) * 0.9
-                    
-                    while lastProcessedIndex < index && !self.songs.isEmpty {
-                        _ = self.songs.removeFirst()
-                        lastProcessedIndex += 1
-                    }
                 }
             }
         }) { success in
@@ -878,7 +962,7 @@ struct MusicView: View {
                     self.injectProgress = 0
                     
                     if success {
-                        for song in songsToInfect {
+                        for song in songsToInject {
                             if !SongMetadata.shouldPreserveLocalFile(song.localURL) {
                                 try? FileManager.default.removeItem(at: song.localURL)
                             }
@@ -1204,7 +1288,10 @@ struct MusicView: View {
     }
 
     private func duplicateSignature(for song: SongMetadata) -> String {
-        "\(normalizeDuplicateField(song.title))|\(normalizeDuplicateField(song.artist))|\(normalizeDuplicateField(song.album))"
+        let durationBucket = (song.durationMs / 3000) * 3000 // bucket to nearest 3 seconds
+        let fileSizeBucket = (song.fileSize / 1024 / 1024) // bucket to nearest MB
+        let ytID = song.youtubeVideoID ?? ""
+        return "\(normalizeDuplicateField(song.title))|\(normalizeDuplicateField(song.artist))|\(normalizeDuplicateField(song.album))|\(durationBucket)|\(fileSizeBucket)|\(ytID)"
     }
 
     private func normalizeDuplicateField(_ value: String) -> String {
@@ -1301,19 +1388,16 @@ struct MusicView: View {
         }
         
         var lastProcessedIndex = 0
-        let songsToInfect = songs
+        let songsToInject = songs
+        var injectionSucceededUpTo = 0
         
-        manager.injectSongsAsPlaylist(songs: songsToInfect, playlistName: name, targetPlaylistPid: pid, progress: { progressText in
+        manager.injectSongsAsPlaylist(songs: songsToInject, playlistName: name, targetPlaylistPid: pid, progress: { progressText in
             DispatchQueue.main.async {
                 if let range = progressText.range(of: #"(\d+)/\d+"#, options: .regularExpression),
                    let index = Int(progressText[range].split(separator: "/").first ?? "") {
                     self.currentInjectIndex = index
+                    injectionSucceededUpTo = index
                     self.injectProgress = CGFloat(index) / CGFloat(self.totalInjectCount) * 0.9
-                    
-                    while lastProcessedIndex < index && !self.songs.isEmpty {
-                        _ = self.songs.removeFirst()
-                        lastProcessedIndex += 1
-                    }
                 }
             }
         }) { success in
@@ -1329,7 +1413,7 @@ struct MusicView: View {
                     self.injectProgress = 0
                     
                     if success {
-                        for song in songsToInfect {
+                        for song in songsToInject {
                             if !SongMetadata.shouldPreserveLocalFile(song.localURL) {
                                 try? FileManager.default.removeItem(at: song.localURL)
                             }
