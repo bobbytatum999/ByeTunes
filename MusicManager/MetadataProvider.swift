@@ -38,6 +38,9 @@ struct MetadataProviderSettings {
 
     static func selectedSources() -> [MetadataProviderID] {
         migrateIfNeeded()
+        if let legacy = UserDefaults.standard.string(forKey: legacySourceKey), legacy == "all" {
+            return defaultSources
+        }
         guard let json = UserDefaults.standard.string(forKey: sourcesKey),
               let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([MetadataProviderID].self, from: data) else {
@@ -62,6 +65,7 @@ struct MetadataProviderSettings {
         case "itunes": migrated = [.local, .itunes]
         case "deezer": migrated = [.local, .deezer]
         case "apple": migrated = [.local, .apple]
+        case "all": migrated = defaultSources
         default: migrated = [.local]
         }
         saveSources(migrated)

@@ -15,9 +15,10 @@ struct DownloadView: View {
         case appleMusic
         case tidal
         case metadata
+        case all
 
         static var allCases: [SearchProvider] {
-            [.appleMusic, .metadata]
+            [.appleMusic, .metadata, .all]
         }
 
         var id: String { rawValue }
@@ -27,6 +28,7 @@ struct DownloadView: View {
             case .appleMusic: return "Apple Music"
             case .tidal: return "Tidal"
             case .metadata: return "iTunes + Deezer"
+            case .all: return "All Sources"
             }
         }
 
@@ -35,6 +37,7 @@ struct DownloadView: View {
             case .appleMusic: return "Search or paste a link from Apple Music"
             case .tidal: return "Search Tidal songs"
             case .metadata: return "Search iTunes and Deezer"
+            case .all: return "Search all available sources"
             }
         }
 
@@ -43,6 +46,7 @@ struct DownloadView: View {
             case .appleMusic: return "Search a song and tap download"
             case .tidal: return "Search Tidal and tap download"
             case .metadata: return "Search iTunes and Deezer and tap download"
+            case .all: return "Search all sources and tap download"
             }
         }
     }
@@ -265,7 +269,8 @@ struct DownloadView: View {
             handledEmittedCount = newCount
         }
         .onAppear {
-            if searchProviderRaw == SearchProvider.tidal.rawValue {
+            let validRawValues = Set(SearchProvider.allCases.map(\.rawValue))
+            if !validRawValues.contains(searchProviderRaw) {
                 searchProviderRaw = SearchProvider.appleMusic.rawValue
             }
         }
@@ -2182,7 +2187,7 @@ final class DownloadViewModel: ObservableObject {
 
         let resolved: URL?
         switch track.provider {
-        case .appleMusic, .metadata, .tidal:
+        case .appleMusic, .metadata, .tidal, .all:
             resolved = await resolveITunesPreviewURL(for: track)
         }
 
@@ -2252,6 +2257,9 @@ final class DownloadViewModel: ObservableObject {
                 matchesArtistLine(track.artistLine, artistName: album.artistLine)
             }
             return matchingTracks.isEmpty ? batch.tracks : matchingTracks
+        case .all:
+            let albumID = album.albumIdentifier ?? album.id
+            return await fetchAlbumTracks(albumID: albumID, fallbackAlbumName: album.name)
         }
     }
 
@@ -2276,7 +2284,7 @@ final class DownloadViewModel: ObservableObject {
                     previewURL: nil
                 )
             } ?? []
-        case .tidal, .metadata:
+        case .tidal, .metadata, .all:
             return []
         }
     }
@@ -2494,6 +2502,84 @@ final class DownloadViewModel: ObservableObject {
             canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || metadataCanFetchMoreDeezer
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
+
+        case .all:
+            artistResults = []
+            activeTidalSearchHost = nil
+            tidalCachedSearchArtists = []
+            tidalCachedSearchTracks = []
+            tidalCachedSearchAlbums = []
+            tidalSearchItemsCache = []
+            tidalTotalItemCount = 0
+
+            let songs = await AppleMusicAPI.shared.searchSongs(query: trimmed, limit: songPageSize, offset: 0)
+            let albums = await searchAlbums(query: trimmed, limit: albumPageSize, offset: 0)
+            let playlists = await searchPlaylists(query: trimmed, limit: playlistPageSize, offset: 0)
+            let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
+
+            let mappedAMSongs = songs.map { item in
+                let songURL = item.attributes.url ?? "https://music.apple.com/\(region)/song/\(item.id)"
+                return DownloadTrack(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.artistName,
+                    albumName: item.attributes.albumName ?? "Unknown Album",
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    isExplicit: item.attributes.contentRating == "explicit",
+                    sourceURL: songURL,
+                    sourceContext: .song,
+                    provider: .appleMusic,
+                    artistIdentifier: item.relationships?.artists?.data.first?.id,
+                    albumIdentifier: item.relationships?.albums?.data.first?.id,
+                    previewURL: nil
+                )
+            }
+
+            let mappedAMAlbums = albums.map { item in
+                let albumURL = "https://music.apple.com/\(region)/album/\(item.id)"
+                return DownloadAlbum(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.artistName,
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    sourceURL: albumURL,
+                    provider: .appleMusic,
+                    artistIdentifier: nil,
+                    albumIdentifier: item.id
+                )
+            }
+            let mappedAMPlaylists = playlists.map { item in
+                let playlistURL = "https://music.apple.com/\(region)/playlist/\(item.id)"
+                return DownloadAlbum(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.curatorName ?? "Apple Music Playlist",
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    sourceURL: playlistURL,
+                    provider: .appleMusic,
+                    artistIdentifier: nil,
+                    albumIdentifier: item.id
+                )
+            }
+
+            let batch = await fetchMetadataSearchTracks(
+                query: trimmed,
+                limit: songPageSize,
+                deezerIndex: 0,
+                includeITunes: true
+            )
+            metadataCachedSearchTracks = uniqueTracks(batch.tracks)
+            metadataDeezerOffset = batch.deezerCount
+            metadataCanFetchMoreDeezer = batch.deezerCount == songPageSize
+            metadataCachedSearchAlbums = buildMetadataAlbums(from: metadataCachedSearchTracks)
+            metadataCachedSearchPlaylists = []
+
+            songResults = mappedAMSongs + Array(metadataCachedSearchTracks.prefix(songPageSize))
+            albumResults = mappedAMAlbums + Array(metadataCachedSearchAlbums.prefix(albumPageSize))
+            playlistResults = mappedAMPlaylists
+            canLoadMoreSongs = songs.count == songPageSize || metadataCanFetchMoreDeezer || metadataCachedSearchTracks.count > songPageSize
+            canLoadMoreAlbums = albums.count == albumPageSize || metadataCanFetchMoreDeezer || metadataCachedSearchAlbums.count > albumPageSize
+            canLoadMorePlaylists = playlists.count == playlistPageSize
         }
     }
 
@@ -2544,6 +2630,42 @@ final class DownloadViewModel: ObservableObject {
             songResults = Array(metadataCachedSearchTracks.prefix(nextCount))
             albumResults = Array(metadataCachedSearchAlbums.prefix(max(albumResults.count, min(albumPageSize, metadataCachedSearchAlbums.count))))
             canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || metadataCanFetchMoreDeezer
+            canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
+            canLoadMorePlaylists = false
+
+        case .all:
+            let offset = songResults.count
+            let songs = await AppleMusicAPI.shared.searchSongs(query: lastSearchQuery, limit: songPageSize, offset: offset)
+            let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
+            let mappedSongs = songs.map { item in
+                let songURL = item.attributes.url ?? "https://music.apple.com/\(region)/song/\(item.id)"
+                return DownloadTrack(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.artistName,
+                    albumName: item.attributes.albumName ?? "Unknown Album",
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    isExplicit: item.attributes.contentRating == "explicit",
+                    sourceURL: songURL,
+                    sourceContext: .song,
+                    provider: .appleMusic,
+                    artistIdentifier: item.relationships?.artists?.data.first?.id,
+                    albumIdentifier: item.relationships?.albums?.data.first?.id,
+                    previewURL: nil
+                )
+            }
+            songResults.append(contentsOf: mappedSongs.filter { incoming in
+                !songResults.contains(where: { $0.id == incoming.id })
+            })
+
+            await expandMetadataSearchCacheIfNeeded(minimumTrackCount: songResults.count + songPageSize)
+            let nextCount = min(songResults.count + songPageSize, metadataCachedSearchTracks.count)
+            let metadataSongs = Array(metadataCachedSearchTracks.prefix(nextCount))
+            songResults.append(contentsOf: metadataSongs.filter { incoming in
+                !songResults.contains(where: { $0.id == incoming.id })
+            })
+            albumResults = Array(metadataCachedSearchAlbums.prefix(max(albumResults.count, min(albumPageSize, metadataCachedSearchAlbums.count))))
+            canLoadMoreSongs = songs.count == songPageSize || metadataCanFetchMoreDeezer || songResults.count < metadataCachedSearchTracks.count
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
         }
@@ -2597,6 +2719,37 @@ final class DownloadViewModel: ObservableObject {
             canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || metadataCanFetchMoreDeezer
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
+
+        case .all:
+            let offset = albumResults.count
+            let albums = await searchAlbums(query: lastSearchQuery, limit: albumPageSize, offset: offset)
+            let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
+            let mappedAlbums = albums.map { item in
+                let albumURL = "https://music.apple.com/\(region)/album/\(item.id)"
+                return DownloadAlbum(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.artistName,
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    sourceURL: albumURL,
+                    provider: .appleMusic,
+                    artistIdentifier: nil,
+                    albumIdentifier: item.id
+                )
+            }
+            albumResults.append(contentsOf: mappedAlbums.filter { incoming in
+                !albumResults.contains(where: { $0.id == incoming.id })
+            })
+
+            let desiredAlbumCount = albumResults.count + albumPageSize
+            await expandMetadataSearchCacheIfNeeded(minimumAlbumCount: desiredAlbumCount)
+            let metadataAlbums = Array(metadataCachedSearchAlbums.prefix(min(desiredAlbumCount, metadataCachedSearchAlbums.count)))
+            albumResults.append(contentsOf: metadataAlbums.filter { incoming in
+                !albumResults.contains(where: { $0.id == incoming.id })
+            })
+            canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || metadataCanFetchMoreDeezer
+            canLoadMoreAlbums = albums.count == albumPageSize || albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
+            canLoadMorePlaylists = false
         }
     }
 
@@ -2628,6 +2781,27 @@ final class DownloadViewModel: ObservableObject {
             canLoadMorePlaylists = playlists.count == playlistPageSize
         case .tidal, .metadata:
             canLoadMorePlaylists = false
+
+        case .all:
+            let offset = playlistResults.count
+            let playlists = await searchPlaylists(query: lastSearchQuery, limit: playlistPageSize, offset: offset)
+            let region = UserDefaults.standard.string(forKey: "storeRegion")?.lowercased() ?? "us"
+            let mappedPlaylists = playlists.map { item in
+                DownloadAlbum(
+                    id: item.id,
+                    name: item.attributes.name,
+                    artistLine: item.attributes.curatorName ?? "Apple Music Playlist",
+                    artworkURL: item.attributes.artwork?.artworkURL(width: 400, height: 400),
+                    sourceURL: "https://music.apple.com/\(region)/playlist/\(item.id)",
+                    provider: .appleMusic,
+                    artistIdentifier: nil,
+                    albumIdentifier: item.id
+                )
+            }
+            playlistResults.append(contentsOf: mappedPlaylists.filter { incoming in
+                !playlistResults.contains(where: { $0.id == incoming.id })
+            })
+            canLoadMorePlaylists = playlists.count == playlistPageSize
         }
     }
 
@@ -2673,6 +2847,8 @@ final class DownloadViewModel: ObservableObject {
         case .tidal:
             return await buildMetadataArtistProfile(for: artist.name)
         case .metadata:
+            return await buildMetadataArtistProfile(for: artist.name)
+        case .all:
             return await buildMetadataArtistProfile(for: artist.name)
         }
     }

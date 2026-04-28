@@ -903,7 +903,8 @@ struct SettingsView: View {
             Text("This will permanently delete your Music library database and playlists from the device. This action cannot be undone.")
         }
         .onAppear {
-            if downloadSearchProvider == DownloadSearchProviderOption.tidal.rawValue {
+            let validRawValues = Set(DownloadSearchProviderOption.allCases.map(\.rawValue))
+            if !validRawValues.contains(downloadSearchProvider) {
                 downloadSearchProvider = DownloadSearchProviderOption.appleMusic.rawValue
             }
             refreshSnapshots()
@@ -1747,6 +1748,13 @@ private struct DownloaderSettingsScreen: View {
         }
         .navigationTitle("Metadata & Downloads")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: metadataSource) { newValue in
+            if newValue == "all" {
+                MetadataProviderSettings.saveSources(MetadataProviderSettings.defaultSources)
+            } else if let provider = MetadataProviderID(rawValue: newValue) {
+                MetadataProviderSettings.saveSources([provider])
+            }
+        }
     }
 
     private func serverPickerRow<Option: Identifiable & CustomStringConvertible>(
@@ -1801,6 +1809,7 @@ private enum MetadataSourceOption: String, CaseIterable, Identifiable, CustomStr
     case itunes
     case deezer
     case apple
+    case all
 
     var id: String { rawValue }
 
@@ -1810,6 +1819,7 @@ private enum MetadataSourceOption: String, CaseIterable, Identifiable, CustomStr
         case .itunes: return "iTunes API"
         case .deezer: return "Deezer API"
         case .apple: return "Apple Music"
+        case .all: return "All Sources"
         }
     }
 }
@@ -1818,9 +1828,10 @@ private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, C
     case appleMusic
     case tidal
     case metadata
+    case all
 
     static var allCases: [DownloadSearchProviderOption] {
-        [.appleMusic, .metadata]
+        [.appleMusic, .metadata, .all]
     }
 
     var id: String { rawValue }
@@ -1830,6 +1841,7 @@ private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, C
         case .appleMusic: return "Apple Music"
         case .tidal: return "Tidal"
         case .metadata: return "iTunes + Deezer"
+        case .all: return "All Sources"
         }
     }
 }

@@ -80,7 +80,7 @@ struct ManualMetadataEditor: View {
                             
                             Spacer()
                             
-                            Text(metadataSource == "local" ? "iTunes" : (metadataSource == "apple" ? "Apple Music" : metadataSource.capitalized))
+                            Text(metadataSource == "local" || metadataSource == "all" ? "iTunes" : (metadataSource == "apple" ? "Apple Music" : metadataSource.capitalized))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             
@@ -90,7 +90,7 @@ struct ManualMetadataEditor: View {
                         }
                     }
                 } footer: {
-                    Text("Search \(metadataSource == "local" ? "iTunes" : (metadataSource == "apple" ? "Apple Music" : metadataSource.capitalized)) to auto-fill metadata fields")
+                    Text("Search \(metadataSource == "local" || metadataSource == "all" ? "iTunes" : (metadataSource == "apple" ? "Apple Music" : metadataSource.capitalized)) to auto-fill metadata fields")
                 }
                 
                 Section {

@@ -2508,11 +2508,3 @@ extension SongMetadata {
         return nil
     }
 }
-at = fmt
-            if let date = df.date(from: dateStr) {
-                return Int(date.timeIntervalSinceReferenceDate)
-            }
-        }
-        return nil
-    }
-}

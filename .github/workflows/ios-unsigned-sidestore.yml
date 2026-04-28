@@ -190,7 +190,7 @@ jobs:
           echo "SDK: iphoneos"
           echo "DerivedData: $DERIVED_DATA"
 
-          # Build with filtered output for readability
+          # Build to log file so we can reliably capture the exit code
           xcodebuild \
             -project "$PROJECT_FILE" \
             -scheme "$SCHEME" \
@@ -209,15 +209,20 @@ jobs:
             SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
             GCC_TREAT_WARNINGS_AS_ERRORS=NO \
             build \
-            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | \
-            grep -v '^[[:space:]]*$' | \
-            grep -E '(error:|warning:|BUILD|===|CompileSwift|Ld |CpResource|Generate|Write)' || true
+            > "$RUNNER_TEMP/xcodebuild.log" 2>&1 || true
 
-          BUILD_RESULT=${PIPESTATUS[0]}
+          BUILD_RESULT=0
+          if grep -q "** BUILD FAILED **" "$RUNNER_TEMP/xcodebuild.log"; then
+            BUILD_RESULT=1
+          fi
+
+          # Display filtered output for readability
+          grep -v '^[[:space:]]*$' "$RUNNER_TEMP/xcodebuild.log" | \
+            grep -E '(error:|warning:|BUILD|===|CompileSwift|Ld |CpResource|Generate|Write)' || true
 
           if [[ $BUILD_RESULT -ne 0 ]]; then
             echo ""
-            echo "=== BUILD FAILED (exit $BUILD_RESULT) ==="
+            echo "=== BUILD FAILED ==="
             echo "--- Last 100 lines of build log ---"
             tail -n 100 "$RUNNER_TEMP/xcodebuild.log"
             exit 1
@@ -229,6 +234,7 @@ jobs:
         id: locate-app
         shell: bash
         run: |
+          set -euo pipefail
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
           APP_PATH="$(find "$DERIVED_DATA" -name '*.app' -type d | head -n 1)"
 
@@ -238,8 +244,23 @@ jobs:
             exit 1
           fi
 
+          BINARY_PATH="$APP_PATH/$SCHEME"
+          if [[ ! -f "$BINARY_PATH" ]]; then
+            echo "ERROR: No binary found inside .app bundle"
+            ls -la "$APP_PATH"
+            exit 1
+          fi
+
+          BINARY_SIZE="$(stat -f%z "$BINARY_PATH" 2>/dev/null || stat -c%s "$BINARY_PATH" 2>/dev/null || echo 0)"
+          if [[ "$BINARY_SIZE" -lt 1000 ]]; then
+            echo "ERROR: Binary is too small ($BINARY_SIZE bytes) — build likely failed"
+            ls -la "$BINARY_PATH"
+            exit 1
+          fi
+
           echo "app-path=$APP_PATH" >> "$GITHUB_OUTPUT"
           echo "Found app: $APP_PATH"
+          echo "Binary size: $BINARY_SIZE bytes"
           ls -la "$APP_PATH"
 
       - name: Package IPA
@@ -274,9 +295,15 @@ jobs:
           IPA_PATH="$ARTIFACT_PATH/ByeTunes-unsigned.ipa"
           ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$IPA_PATH"
 
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA_PATH" 2>/dev/null || stat -c%s "$IPA_PATH" 2>/dev/null || echo 0)"
+          if [[ "$IPA_SIZE_BYTES" -lt 10000 ]]; then
+            echo "ERROR: IPA is too small ($IPA_SIZE_BYTES bytes) — build did not produce a valid app"
+            exit 1
+          fi
+
           IPA_SIZE="$(du -sh "$IPA_PATH" | cut -f1)"
           echo "ipa-size=$IPA_SIZE" >> "$GITHUB_OUTPUT"
-          echo "IPA created: $IPA_SIZE"
+          echo "IPA created: $IPA_SIZE ($IPA_SIZE_BYTES bytes)"
           ls -lh "$IPA_PATH"
 
           # Save build log alongside artifact

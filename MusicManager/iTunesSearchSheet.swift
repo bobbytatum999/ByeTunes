@@ -26,7 +26,7 @@ struct iTunesSearchSheet: View {
                     Text("Select Match")
                         .font(.system(size: 24, weight: .bold))
                     
-                    if metadataSource == "local" {
+                    if metadataSource == "local" || metadataSource == "all" {
                         Menu {
                             Button("iTunes") { activeSource = "itunes" }
                             Button("Deezer") { activeSource = "deezer" }
@@ -193,7 +193,7 @@ struct iTunesSearchSheet: View {
             }
         }
         .onAppear {
-            if metadataSource == "local" {
+            if metadataSource == "local" || metadataSource == "all" {
                 activeSource = "itunes"
             } else {
                 activeSource = metadataSource
