@@ -119,11 +119,22 @@ struct PartialSongMetadata {
 }
 
 enum MetadataProvider {
+    // Updated Invidious instances: official public list as of April 2026
     private static let invidiousInstances = [
-        "https://yt.artemix.org",
-        "https://vid.puffyan.us",
-        "https://iv.nboeck.de",
-        "https://yt.lemnos.dev"
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://inv.thepixora.com",
+        "https://yt.chocolatemoo53.com",
+        "https://yewtu.be"
+    ]
+
+    // Piped API instances for fallback (audio streams + metadata)
+    private static let pipedInstances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.leptons.xyz",
+        "https://piped-api.lunar.icu",
+        "https://pipedapi.r4fo.com",
+        "https://pipedapi.ngn.tf"
     ]
 
     static func normalizeYouTubeTitle(_ rawTitle: String, channel: String) -> PartialSongMetadata {
@@ -162,7 +173,7 @@ enum MetadataProvider {
 
     static func extractYouTubeVideoID(from urlString: String) -> String? {
         let patterns = [
-            #"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|music\.youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})"#,
             #"^([a-zA-Z0-9_-]{11})$"#
         ]
         for pattern in patterns {
@@ -223,7 +234,7 @@ enum MetadataProvider {
     }
 
     static func fetchYouTubeMetadataFree(videoID: String) async -> YouTubeMetadataCandidate? {
-        // Try Invidious instances first (more reliable than oEmbed)
+        // 1) Try Invidious instances first
         for instance in invidiousInstances {
             let urlString = "\(instance)/api/v1/videos/\(videoID)"
             guard let url = URL(string: urlString) else { continue }
@@ -260,7 +271,40 @@ enum MetadataProvider {
             }
         }
 
-        // Fallback to noembed.com (oEmbed mirror)
+        // 2) Fallback to Piped instances
+        if let piped = await fetchPipedMetadata(videoID: videoID) {
+            return piped
+        }
+
+        // 3) Fallback to official YouTube oEmbed
+        let oembedURLString = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=\(videoID)&format=json"
+        guard let oembedURL = URL(string: oembedURLString) else { return nil }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: oembedURL)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let title = json?["title"] as? String ?? ""
+            let authorName = json?["author_name"] as? String ?? ""
+            let thumbnailURL = json?["thumbnail_url"] as? String
+
+            if !title.isEmpty || !authorName.isEmpty {
+                return YouTubeMetadataCandidate(
+                    videoID: videoID,
+                    title: title,
+                    channelTitle: authorName,
+                    description: nil,
+                    tags: [],
+                    thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+                    durationMs: nil
+                )
+            }
+        } catch {
+            Logger.shared.log("[YouTubeProvider] YouTube oEmbed fallback failed: \(error)")
+        }
+
+        // 4) Last resort: noembed.com mirror
         let noembedURLString = "https://noembed.com/embed?url=https://www.youtube.com/watch?v=\(videoID)"
         guard let noembedURL = URL(string: noembedURLString) else { return nil }
 
@@ -291,10 +335,47 @@ enum MetadataProvider {
         return nil
     }
 
+    // MARK: - Piped helpers
+
+    private static func fetchPipedMetadata(videoID: String) async -> YouTubeMetadataCandidate? {
+        for instance in pipedInstances {
+            let urlString = "\(instance)/streams/\(videoID)"
+            guard let url = URL(string: urlString) else { continue }
+
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+                let title = json["title"] as? String ?? ""
+                let uploader = json["uploader"] as? String ?? ""
+                let duration = json["duration"] as? Int
+                let thumbnailURL = json["thumbnailUrl"] as? String
+
+                if !title.isEmpty || !uploader.isEmpty {
+                    return YouTubeMetadataCandidate(
+                        videoID: videoID,
+                        title: title,
+                        channelTitle: uploader,
+                        description: json["description"] as? String,
+                        tags: [],
+                        thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+                        durationMs: duration.map { $0 * 1000 }
+                    )
+                }
+            } catch {
+                Logger.shared.log("[YouTubeProvider] Piped metadata \(instance) failed: \(error)")
+                continue
+            }
+        }
+        return nil
+    }
+
     static func searchYouTubeForMetadata(query: String, limit: Int = 5) async -> [YouTubeMetadataCandidate] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
 
-        // Try Invidious search API first
+        // 1) Try Invidious search API
         for instance in invidiousInstances {
             let searchURLString = "\(instance)/api/v1/search?q=\(encodedQuery)&type=video"
             guard let searchURL = URL(string: searchURLString) else { continue }
@@ -343,7 +424,50 @@ enum MetadataProvider {
             }
         }
 
-        // Fallback to YouTube HTML scraping
+        // 2) Fallback to Piped search
+        for instance in pipedInstances {
+            let searchURLString = "\(instance)/search?q=\(encodedQuery)&filter=videos"
+            guard let searchURL = URL(string: searchURLString) else { continue }
+
+            do {
+                let (data, response) = try await URLSession.shared.data(from: searchURL)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let items = json["items"] as? [[String: Any]] else { continue }
+
+                var candidates: [YouTubeMetadataCandidate] = []
+                for item in items.prefix(limit) {
+                    guard let urlPath = item["url"] as? String,
+                          let videoID = extractYouTubeVideoID(from: urlPath) else { continue }
+                    let title = item["title"] as? String ?? ""
+                    let author = item["uploaderName"] as? String ?? ""
+                    let duration = item["duration"] as? Int
+                    let thumbnailURL = item["thumbnail"] as? String
+
+                    if !title.isEmpty || !author.isEmpty {
+                        candidates.append(YouTubeMetadataCandidate(
+                            videoID: videoID,
+                            title: title,
+                            channelTitle: author,
+                            description: nil,
+                            tags: [],
+                            thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+                            durationMs: duration.map { $0 * 1000 }
+                        ))
+                    }
+                }
+
+                if !candidates.isEmpty {
+                    return candidates
+                }
+            } catch {
+                Logger.shared.log("[YouTubeProvider] Piped search \(instance) failed: \(error)")
+                continue
+            }
+        }
+
+        // 3) Fallback to YouTube HTML scraping
         let searchURLString = "https://www.youtube.com/results?search_query=\(encodedQuery)"
         guard let searchURL = URL(string: searchURLString) else { return [] }
 
@@ -398,6 +522,7 @@ enum MetadataProvider {
     }
 
     static func resolveYouTubeAudioStreamURL(videoID: String) async -> URL? {
+        // 1) Try Invidious adaptive audio streams
         for instance in invidiousInstances {
             let urlString = "\(instance)/api/v1/videos/\(videoID)"
             guard let url = URL(string: urlString) else { continue }
@@ -408,14 +533,12 @@ enum MetadataProvider {
 
                 guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
-                // Prefer adaptiveFormats audio-only streams
                 if let adaptiveFormats = json["adaptiveFormats"] as? [[String: Any]] {
                     let audioFormats = adaptiveFormats.filter {
                         let type = $0["type"] as? String ?? ""
                         return type.hasPrefix("audio/")
                     }
 
-                    // Sort by bitrate descending to get best quality
                     let sortedAudio = audioFormats.sorted {
                         let bit0 = $0["bitrate"] as? Int ?? 0
                         let bit1 = $1["bitrate"] as? Int ?? 0
@@ -429,7 +552,6 @@ enum MetadataProvider {
                     }
                 }
 
-                // Fallback to formatStreams if no adaptive audio found
                 if let formatStreams = json["formatStreams"] as? [[String: Any]] {
                     if let firstStream = formatStreams.first,
                        let streamURL = firstStream["url"] as? String,
@@ -442,6 +564,51 @@ enum MetadataProvider {
                 continue
             }
         }
+
+        // 2) Fallback to Piped audio streams
+        for instance in pipedInstances {
+            let urlString = "\(instance)/streams/\(videoID)"
+            guard let url = URL(string: urlString) else { continue }
+
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+                if let audioStreams = json["audioStreams"] as? [[String: Any]] {
+                    let sortedAudio = audioStreams.sorted {
+                        let bit0 = $0["bitrate"] as? Int ?? 0
+                        let bit1 = $1["bitrate"] as? Int ?? 0
+                        return bit0 > bit1
+                    }
+
+                    if let bestAudio = sortedAudio.first,
+                       let streamURL = bestAudio["url"] as? String,
+                       let resolved = URL(string: streamURL) {
+                        return resolved
+                    }
+                }
+
+                // Piped also exposes combined video+audio streams if audio-only isn't present
+                if let videoStreams = json["videoStreams"] as? [[String: Any]] {
+                    let sortedVideo = videoStreams.sorted {
+                        let bit0 = $0["bitrate"] as? Int ?? 0
+                        let bit1 = $1["bitrate"] as? Int ?? 0
+                        return bit0 > bit1
+                    }
+                    if let bestStream = sortedVideo.first,
+                       let streamURL = bestStream["url"] as? String,
+                       let resolved = URL(string: streamURL) {
+                        return resolved
+                    }
+                }
+            } catch {
+                Logger.shared.log("[YouTubeProvider] Piped stream resolve \(instance) failed: \(error)")
+                continue
+            }
+        }
+
         return nil
     }
 

@@ -3798,9 +3798,9 @@ final class DownloadViewModel: ObservableObject {
     private func downloadWithFallbacks(track: DownloadTrack) async throws -> BackendDownloadOutcome {
         let serverPreference = DownloaderServerPreference(rawValue: UserDefaults.standard.string(forKey: "downloadServer") ?? "") ?? .auto
 
-        // YouTube tracks use Invidious direct stream extraction
+        // YouTube tracks use direct stream extraction (Invidious or Piped)
         if isYouTubeTrack(track) {
-            log("YouTube track detected. Using Invidious stream extraction.")
+            log("YouTube track detected. Using direct stream extraction.")
             let youtubeCandidates = await buildYouTubeCandidates(track: track)
             do {
                 if let outcome = try await executeCandidatesUntilSuccess(
@@ -3972,7 +3972,7 @@ final class DownloadViewModel: ObservableObject {
 
         var request = URLRequest(url: streamURL)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-        return [BackendCandidate(label: "YouTube (Invidious)", request: request, tidalAPIBaseURL: nil)]
+        return [BackendCandidate(label: "YouTube (Direct Stream)", request: request, tidalAPIBaseURL: nil)]
     }
 
     private func resolvedPrimaryDownloadSource(
