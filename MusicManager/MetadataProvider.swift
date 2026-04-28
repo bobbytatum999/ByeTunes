@@ -119,12 +119,91 @@ struct PartialSongMetadata {
 }
 
 enum MetadataProvider {
+    // MARK: - Instance Lists (shuffled per-request to distribute load)
     private static let invidiousInstances = [
-        "https://yt.artemix.org",
-        "https://vid.puffyan.us",
+        "https://invidious.darkness.services",
+        "https://invidious.fdn.fr",
+        "https://invidious.flokinet.to",
+        "https://inv.thepixora.com",
+        "https://inv.nadeko.net",
+        "https://invidious.jing.rocks",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.perennialte.ch",
+        "https://invidious.drgns.space",
+        "https://invidious.protokolla.fi",
+        "https://invidious.privacydev.net",
+        "https://invidious.private.coffee",
+        "https://yt.drgnz.club",
+        "https://inv.in.projectsegfau.lt",
+        "https://invidious.reallyaweso.me",
+        "https://invidious.materialio.us",
+        "https://invidious.incogniweb.net",
+        "https://invidious.privacyredirect.com",
+        "https://inv.tux.pizza",
         "https://iv.nboeck.de",
-        "https://yt.lemnos.dev"
+        "https://iv.melmac.space",
+        "https://iv.datura.network",
+        "https://y.com.sb",
+        "https://inv.riverside.rocks"
     ]
+
+    private static let pipedInstances = [
+        "https://api.piped.projectsegfault.com",
+        "https://pipedapi.moomoo.me",
+        "https://pipedapi.adminforge.de",
+        "https://pipedapi.mint.lgbt",
+        "https://pipedapi.frontendfriendly.xyz",
+        "https://pipedapi.moomoo.me",
+        "https://api.piped.privacydev.net"
+    ]
+
+    private static func shuffledInstances(_ instances: [String]) -> [String] {
+        var copy = instances
+        copy.shuffle()
+        return copy
+    }
+
+    // MARK: - Shared HTTP/JSON Helper
+
+    /// Fetches JSON from a URL and returns it as `[String: Any]`.
+    /// - Returns: The parsed dictionary, or `nil` if the request fails or returns non-JSON.
+    private static func fetchJSONDictionary(from url: URL) async -> [String: Any]? {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        } catch {
+            Logger.shared.log("[MetadataProvider] fetchJSONDictionary failed for \(url): \(error)")
+            return nil
+        }
+    }
+
+    /// Fetches JSON from a URL and returns it as `[[String: Any]]`.
+    /// - Returns: The parsed array, or `nil` if the request fails or returns non-JSON.
+    private static func fetchJSONArray(from url: URL) async -> [[String: Any]]? {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        } catch {
+            Logger.shared.log("[MetadataProvider] fetchJSONArray failed for \(url): \(error)")
+            return nil
+        }
+    }
+
+    /// Fetches JSON from a URLRequest and returns it as `[String: Any]`.
+    private static func fetchJSONDictionary(for request: URLRequest) async -> [String: Any]? {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        } catch {
+            Logger.shared.log("[MetadataProvider] fetchJSONDictionary failed for \(request.url?.absoluteString ?? "nil"): \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Title Normalization
 
     static func normalizeYouTubeTitle(_ rawTitle: String, channel: String) -> PartialSongMetadata {
         let cleaned = rawTitle
@@ -160,10 +239,15 @@ enum MetadataProvider {
         )
     }
 
+    // MARK: - Video ID Extraction
+
     static func extractYouTubeVideoID(from urlString: String) -> String? {
         let patterns = [
-            #"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})"#,
-            #"^([a-zA-Z0-9_-]{11})$"#
+            #"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|music\.youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})"#,
+            #"^/?watch\?v=([a-zA-Z0-9_-]{11})"#,          // Relative /watch?v=... (Piped, etc.)
+            #"^/?shorts/([a-zA-Z0-9_-]{11})"#,            // Relative /shorts/...
+            #"^/?live/([a-zA-Z0-9_-]{11})"#,              // Relative /live/...
+            #"^([a-zA-Z0-9_-]{11})$"#                     // Bare ID
         ]
         for pattern in patterns {
             if let regex = try? NSRegularExpression(pattern: pattern),
@@ -175,12 +259,16 @@ enum MetadataProvider {
         return nil
     }
 
+    // MARK: - Public Metadata Entry Point
+
     static func fetchYouTubeMetadata(videoID: String, apiKey: String? = nil) async -> YouTubeMetadataCandidate? {
         if let key = apiKey, !key.isEmpty {
             return await fetchYouTubeMetadataWithAPIKey(videoID: videoID, apiKey: key)
         }
         return await fetchYouTubeMetadataFree(videoID: videoID)
     }
+
+    // MARK: - API Key Path
 
     private static func fetchYouTubeMetadataWithAPIKey(videoID: String, apiKey: String) async -> YouTubeMetadataCandidate? {
         let urlString = "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=\(videoID)&key=\(apiKey)"
@@ -222,21 +310,19 @@ enum MetadataProvider {
         }
     }
 
+    // MARK: - Free Metadata Path
+
     static func fetchYouTubeMetadataFree(videoID: String) async -> YouTubeMetadataCandidate? {
-        // Try Invidious instances first (more reliable than oEmbed)
-        for instance in invidiousInstances {
+        // Try Invidious instances first (metadata + duration + thumbnails)
+        for instance in shuffledInstances(invidiousInstances) {
             let urlString = "\(instance)/api/v1/videos/\(videoID)"
             guard let url = URL(string: urlString) else { continue }
 
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
-
-                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                let title = json?["title"] as? String ?? ""
-                let author = json?["author"] as? String ?? ""
-                let lengthSeconds = json?["lengthSeconds"] as? Int
-                let videoThumbnails = json?["videoThumbnails"] as? [[String: Any]]
+            if let json = await fetchJSONDictionary(from: url) {
+                let title = json["title"] as? String ?? ""
+                let author = json["author"] as? String ?? ""
+                let lengthSeconds = json["lengthSeconds"] as? Int
+                let videoThumbnails = json["videoThumbnails"] as? [[String: Any]]
                 let bestThumbnail = videoThumbnails?.first { ($0["quality"] as? String) == "maxresdefault" }
                     ?? videoThumbnails?.first { ($0["quality"] as? String) == "high" }
                     ?? videoThumbnails?.first { ($0["quality"] as? String) == "medium" }
@@ -248,30 +334,53 @@ enum MetadataProvider {
                         videoID: videoID,
                         title: title,
                         channelTitle: author,
-                        description: json?["description"] as? String,
-                        tags: json?["keywords"] as? [String] ?? [],
+                        description: json["description"] as? String,
+                        tags: json["keywords"] as? [String] ?? [],
                         thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
                         durationMs: lengthSeconds.map { $0 * 1000 }
                     )
                 }
-            } catch {
-                Logger.shared.log("[YouTubeProvider] Invidious instance \(instance) failed: \(error)")
-                continue
             }
         }
 
-        // Fallback to noembed.com (oEmbed mirror)
+        // Fallback 1: Piped instances (metadata + duration + thumbnails)
+        for instance in shuffledInstances(pipedInstances) {
+            let urlString = "\(instance)/streams/\(videoID)"
+            guard let url = URL(string: urlString) else { continue }
+
+            if let json = await fetchJSONDictionary(from: url) {
+                let title = json["title"] as? String ?? ""
+                let uploader = json["uploader"] as? String ?? ""
+                let uploaderVerified = json["uploaderVerified"] as? Bool ?? false
+                let thumbnailURL = json["thumbnailUrl"] as? String
+                let uploadDate = json["uploadDate"] as? String
+                let duration = json["duration"] as? Int
+
+                // Piped tags are not always present; description is
+                let description = json["description"] as? String
+
+                if !title.isEmpty || !uploader.isEmpty {
+                    return YouTubeMetadataCandidate(
+                        videoID: videoID,
+                        title: title,
+                        channelTitle: uploader,
+                        description: description,
+                        tags: [],
+                        thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+                        durationMs: duration.map { $0 * 1000 }
+                    )
+                }
+            }
+        }
+
+        // Fallback 2: noembed.com (oEmbed mirror — very reliable for basic metadata)
         let noembedURLString = "https://noembed.com/embed?url=https://www.youtube.com/watch?v=\(videoID)"
         guard let noembedURL = URL(string: noembedURLString) else { return nil }
 
-        do {
-            let (data, response) = try await URLSession.shared.data(from: noembedURL)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let title = json?["title"] as? String ?? ""
-            let authorName = json?["author_name"] as? String ?? ""
-            let thumbnailURL = json?["thumbnail_url"] as? String
+        if let json = await fetchJSONDictionary(from: noembedURL) {
+            let title = json["title"] as? String ?? ""
+            let authorName = json["author_name"] as? String ?? ""
+            let thumbnailURL = json["thumbnail_url"] as? String
 
             if !title.isEmpty || !authorName.isEmpty {
                 return YouTubeMetadataCandidate(
@@ -284,18 +393,70 @@ enum MetadataProvider {
                     durationMs: nil
                 )
             }
-        } catch {
-            Logger.shared.log("[YouTubeProvider] noembed fallback failed: \(error)")
+        }
+
+        // Fallback 3: YouTube Innertube (ANDROID client) — most reliable when frontends are blocked
+        if let candidate = await fetchYouTubeMetadataInnertube(videoID: videoID) {
+            return candidate
         }
 
         return nil
     }
 
+    // MARK: - Innertube Metadata Fallback
+
+    private static func fetchYouTubeMetadataInnertube(videoID: String) async -> YouTubeMetadataCandidate? {
+        let url = URL(string: "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")!
+        let payload: [String: Any] = [
+            "videoId": videoID,
+            "context": [
+                "client": [
+                    "clientName": "ANDROID",
+                    "clientVersion": "17.10.35",
+                    "androidSdkVersion": 30,
+                    "hl": "en",
+                    "gl": "US"
+                ]
+            ]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("com.google.android.youtube/17.10.35 (Linux; U; Android 11) gzip", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        guard let json = await fetchJSONDictionary(for: request),
+              let videoDetails = json["videoDetails"] as? [String: Any] else { return nil }
+
+        let title = videoDetails["title"] as? String ?? ""
+        let author = videoDetails["author"] as? String ?? ""
+        let lengthSecondsStr = videoDetails["lengthSeconds"] as? String
+        let lengthSeconds = lengthSecondsStr.flatMap(Int.init)
+
+        // Thumbnails from videoDetails.thumbnail.thumbnails (last is usually highest res)
+        let thumbnailArray = (videoDetails["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
+        let bestThumb = thumbnailArray?.last
+        let thumbnailURL = bestThumb?["url"] as? String
+
+        return YouTubeMetadataCandidate(
+            videoID: videoID,
+            title: title,
+            channelTitle: author,
+            description: nil,
+            tags: [],
+            thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+            durationMs: lengthSeconds.map { $0 * 1000 }
+        )
+    }
+
+    // MARK: - Search
+
     static func searchYouTubeForMetadata(query: String, limit: Int = 5) async -> [YouTubeMetadataCandidate] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
 
         // Try Invidious search API first
-        for instance in invidiousInstances {
+        for instance in shuffledInstances(invidiousInstances) {
             let searchURLString = "\(instance)/api/v1/search?q=\(encodedQuery)&type=video"
             guard let searchURL = URL(string: searchURLString) else { continue }
 
@@ -303,10 +464,7 @@ enum MetadataProvider {
                 var request = URLRequest(url: searchURL)
                 request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
 
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
-
-                guard let results = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
+                guard let results = await fetchJSONArray(for: request) else { continue }
 
                 var candidates: [YouTubeMetadataCandidate] = []
                 for item in results.prefix(limit) {
@@ -337,13 +495,45 @@ enum MetadataProvider {
                 if !candidates.isEmpty {
                     return candidates
                 }
-            } catch {
-                Logger.shared.log("[YouTubeProvider] Invidious search \(instance) failed: \(error)")
-                continue
             }
         }
 
-        // Fallback to YouTube HTML scraping
+        // Fallback: Piped search API — returns top-level [[String: Any]] array
+        for instance in shuffledInstances(pipedInstances) {
+            let searchURLString = "\(instance)/search?q=\(encodedQuery)&filter=videos"
+            guard let searchURL = URL(string: searchURLString) else { continue }
+
+            if let results = await fetchJSONArray(from: searchURL) {
+                var candidates: [YouTubeMetadataCandidate] = []
+                for item in results.prefix(limit) {
+                    // Piped search items use "url" with relative paths like "/watch?v=..."
+                    let urlField = item["url"] as? String ?? ""
+                    guard let videoID = extractYouTubeVideoID(from: urlField) else { continue }
+                    let title = item["title"] as? String ?? item["name"] as? String ?? ""
+                    let uploader = item["uploaderName"] as? String ?? item["uploader"] as? String ?? ""
+                    let thumbnailURL = item["thumbnail"] as? String
+                    let duration = item["duration"] as? Int
+
+                    if !title.isEmpty || !uploader.isEmpty {
+                        candidates.append(YouTubeMetadataCandidate(
+                            videoID: videoID,
+                            title: title,
+                            channelTitle: uploader,
+                            description: nil,
+                            tags: [],
+                            thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+                            durationMs: duration.map { $0 * 1000 }
+                        ))
+                    }
+                }
+
+                if !candidates.isEmpty {
+                    return candidates
+                }
+            }
+        }
+
+        // Fallback: YouTube HTML scraping
         let searchURLString = "https://www.youtube.com/results?search_query=\(encodedQuery)"
         guard let searchURL = URL(string: searchURLString) else { return [] }
 
@@ -397,17 +587,15 @@ enum MetadataProvider {
         }
     }
 
+    // MARK: - Audio Stream Resolution
+
     static func resolveYouTubeAudioStreamURL(videoID: String) async -> URL? {
-        for instance in invidiousInstances {
+        // Try Invidious instances for adaptive audio streams
+        for instance in shuffledInstances(invidiousInstances) {
             let urlString = "\(instance)/api/v1/videos/\(videoID)"
             guard let url = URL(string: urlString) else { continue }
 
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
-
-                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
+            if let json = await fetchJSONDictionary(from: url) {
                 // Prefer adaptiveFormats audio-only streams
                 if let adaptiveFormats = json["adaptiveFormats"] as? [[String: Any]] {
                     let audioFormats = adaptiveFormats.filter {
@@ -437,13 +625,101 @@ enum MetadataProvider {
                         return resolved
                     }
                 }
-            } catch {
-                Logger.shared.log("[YouTubeProvider] Invidious stream resolve \(instance) failed: \(error)")
-                continue
             }
         }
+
+        // Fallback: Piped streams endpoint
+        for instance in shuffledInstances(pipedInstances) {
+            let urlString = "\(instance)/streams/\(videoID)"
+            guard let url = URL(string: urlString) else { continue }
+
+            if let json = await fetchJSONDictionary(from: url) {
+                // Piped returns audioStreams array with quality/bitrate info
+                if let audioStreams = json["audioStreams"] as? [[String: Any]] {
+                    let sortedAudio = audioStreams.sorted {
+                        let bit0 = $0["bitrate"] as? Int ?? 0
+                        let bit1 = $1["bitrate"] as? Int ?? 0
+                        return bit0 > bit1
+                    }
+                    if let bestAudio = sortedAudio.first,
+                       let streamURL = bestAudio["url"] as? String,
+                       let resolved = URL(string: streamURL) {
+                        return resolved
+                    }
+                }
+
+                // Fallback to stream / hls if available
+                if let hlsURL = json["hls"] as? String, let resolved = URL(string: hlsURL) {
+                    return resolved
+                }
+            }
+        }
+
+        // Fallback: Innertube direct stream extraction
+        if let streamURL = await resolveYouTubeAudioStreamInnertube(videoID: videoID) {
+            return streamURL
+        }
+
         return nil
     }
+
+    // MARK: - Innertube Stream Resolution
+
+    private static func resolveYouTubeAudioStreamInnertube(videoID: String) async -> URL? {
+        let url = URL(string: "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")!
+        let payload: [String: Any] = [
+            "videoId": videoID,
+            "context": [
+                "client": [
+                    "clientName": "ANDROID",
+                    "clientVersion": "17.10.35",
+                    "androidSdkVersion": 30,
+                    "hl": "en",
+                    "gl": "US"
+                ]
+            ]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("com.google.android.youtube/17.10.35 (Linux; U; Android 11) gzip", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        guard let json = await fetchJSONDictionary(for: request),
+              let streamingData = json["streamingData"] as? [String: Any] else { return nil }
+
+        // Check adaptiveFormats for audio-only streams
+        if let adaptiveFormats = streamingData["adaptiveFormats"] as? [[String: Any]] {
+            let audioFormats = adaptiveFormats.filter {
+                let mimeType = $0["mimeType"] as? String ?? ""
+                return mimeType.hasPrefix("audio/")
+            }
+            let sortedAudio = audioFormats.sorted {
+                let bit0 = $0["bitrate"] as? Int ?? 0
+                let bit1 = $1["bitrate"] as? Int ?? 0
+                return bit0 > bit1
+            }
+            if let bestAudio = sortedAudio.first,
+               let streamURL = bestAudio["url"] as? String,
+               let resolved = URL(string: streamURL) {
+                return resolved
+            }
+        }
+
+        // Fallback to regular formats
+        if let formats = streamingData["formats"] as? [[String: Any]] {
+            if let first = formats.first,
+               let streamURL = first["url"] as? String,
+               let resolved = URL(string: streamURL) {
+                return resolved
+            }
+        }
+
+        return nil
+    }
+
+    // MARK: - Duration Parsing
 
     private static func parseISO8601Duration(_ duration: String) -> Int? {
         let pattern = #"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"#
