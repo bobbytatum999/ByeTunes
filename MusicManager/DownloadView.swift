@@ -15,10 +15,11 @@ struct DownloadView: View {
         case appleMusic
         case tidal
         case metadata
+        case youtube
         case all
 
         static var allCases: [SearchProvider] {
-            [.appleMusic, .tidal, .metadata, .all]
+            [.appleMusic, .tidal, .metadata, .youtube, .all]
         }
 
         var id: String { rawValue }
@@ -28,6 +29,7 @@ struct DownloadView: View {
             case .appleMusic: return "Apple Music"
             case .tidal: return "Tidal"
             case .metadata: return "iTunes + Deezer"
+            case .youtube: return "YouTube"
             case .all: return "All Sources"
             }
         }
@@ -37,6 +39,7 @@ struct DownloadView: View {
             case .appleMusic: return "Search or paste a link from Apple Music"
             case .tidal: return "Search Tidal songs"
             case .metadata: return "Search iTunes and Deezer"
+            case .youtube: return "Search YouTube for unreleased and custom songs"
             case .all: return "Search all available sources"
             }
         }
@@ -46,6 +49,7 @@ struct DownloadView: View {
             case .appleMusic: return "Search a song and tap download"
             case .tidal: return "Search Tidal and tap download"
             case .metadata: return "Search iTunes and Deezer and tap download"
+            case .youtube: return "Search YouTube for unreleased tracks and custom songs"
             case .all: return "Search all sources and tap download"
             }
         }
@@ -2011,6 +2015,10 @@ final class DownloadViewModel: ObservableObject {
     private var metadataAlbumTrackCache: [String: [DownloadTrack]] = [:]
     private var metadataDeezerOffset = 0
     private var metadataCanFetchMoreDeezer = false
+    private var youtubeCachedSearchTracks: [DownloadTrack] = []
+    private var youtubeCachedSearchAlbums: [DownloadAlbum] = []
+    private var youtubeCanFetchMore = false
+    private var youtubeSearchOffset = 0
     private var previewPlayer: AVPlayer?
     private var previewEndObserver: NSObjectProtocol?
     private var previewStatusObserver: NSKeyValueObservation?
@@ -2189,6 +2197,8 @@ final class DownloadViewModel: ObservableObject {
         switch track.provider {
         case .appleMusic, .metadata, .tidal, .all:
             resolved = await resolveITunesPreviewURL(for: track)
+        case .youtube:
+            resolved = nil
         }
 
         if let resolved {
@@ -2257,9 +2267,50 @@ final class DownloadViewModel: ObservableObject {
                 matchesArtistLine(track.artistLine, artistName: album.artistLine)
             }
             return matchingTracks.isEmpty ? batch.tracks : matchingTracks
+        case .youtube:
+            if let tracks = metadataAlbumTrackCache[album.id], !tracks.isEmpty {
+                return tracks
+            }
+            let query = "\(album.artistLine) \(album.name)"
+            let batch = await fetchMetadataSearchTracks(query: query, limit: 50, deezerIndex: 0, includeITunes: true)
+            let matchingTracks = batch.tracks.filter { track in
+                DownloadSupport.normalizedSearchValue(track.albumName) == DownloadSupport.normalizedSearchValue(album.name) &&
+                matchesArtistLine(track.artistLine, artistName: album.artistLine)
+            }
+            return matchingTracks.isEmpty ? batch.tracks : matchingTracks
         case .all:
-            let albumID = album.albumIdentifier ?? album.id
-            return await fetchAlbumTracks(albumID: albumID, fallbackAlbumName: album.name)
+            switch album.provider {
+            case .appleMusic:
+                let albumID = album.albumIdentifier ?? album.id
+                return await fetchAlbumTracks(albumID: albumID, fallbackAlbumName: album.name)
+            case .tidal:
+                return await fetchTidalAlbumTracks(for: album)
+            case .metadata:
+                if let tracks = metadataAlbumTrackCache[album.id], !tracks.isEmpty {
+                    return tracks
+                }
+                let query = "\(album.artistLine) \(album.name)"
+                let batch = await fetchMetadataSearchTracks(query: query, limit: 50, deezerIndex: 0, includeITunes: true)
+                let matchingTracks = batch.tracks.filter { track in
+                    DownloadSupport.normalizedSearchValue(track.albumName) == DownloadSupport.normalizedSearchValue(album.name) &&
+                    matchesArtistLine(track.artistLine, artistName: album.artistLine)
+                }
+                return matchingTracks.isEmpty ? batch.tracks : matchingTracks
+            case .youtube:
+                if let tracks = metadataAlbumTrackCache[album.id], !tracks.isEmpty {
+                    return tracks
+                }
+                let query = "\(album.artistLine) \(album.name)"
+                let batch = await fetchMetadataSearchTracks(query: query, limit: 50, deezerIndex: 0, includeITunes: true)
+                let matchingTracks = batch.tracks.filter { track in
+                    DownloadSupport.normalizedSearchValue(track.albumName) == DownloadSupport.normalizedSearchValue(album.name) &&
+                    matchesArtistLine(track.artistLine, artistName: album.artistLine)
+                }
+                return matchingTracks.isEmpty ? batch.tracks : matchingTracks
+            case .all:
+                let albumID = album.albumIdentifier ?? album.id
+                return await fetchAlbumTracks(albumID: albumID, fallbackAlbumName: album.name)
+            }
         }
     }
 
@@ -2284,7 +2335,7 @@ final class DownloadViewModel: ObservableObject {
                     previewURL: nil
                 )
             } ?? []
-        case .tidal, .metadata, .all:
+        case .tidal, .metadata, .youtube, .all:
             return []
         }
     }
@@ -2483,6 +2534,10 @@ final class DownloadViewModel: ObservableObject {
             tidalCachedSearchAlbums = []
             tidalSearchItemsCache = []
             tidalTotalItemCount = 0
+            youtubeCachedSearchTracks = []
+            youtubeCachedSearchAlbums = []
+            youtubeCanFetchMore = false
+            youtubeSearchOffset = 0
 
             let batch = await fetchMetadataSearchTracks(
                 query: trimmed,
@@ -2503,6 +2558,50 @@ final class DownloadViewModel: ObservableObject {
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
 
+        case .youtube:
+            activeTidalSearchHost = nil
+            artistResults = []
+            tidalCachedSearchArtists = []
+            tidalCachedSearchTracks = []
+            tidalCachedSearchAlbums = []
+            tidalSearchItemsCache = []
+            tidalTotalItemCount = 0
+            metadataCachedSearchTracks = []
+            metadataCachedSearchAlbums = []
+            metadataCachedSearchPlaylists = []
+            metadataAlbumTrackCache = [:]
+            metadataDeezerOffset = 0
+            metadataCanFetchMoreDeezer = false
+
+            let candidates = await MetadataProvider.searchYouTubeForMetadata(query: trimmed, limit: songPageSize)
+            youtubeCachedSearchTracks = candidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = candidates.count == songPageSize
+            youtubeSearchOffset = candidates.count
+
+            songResults = Array(youtubeCachedSearchTracks.prefix(songPageSize))
+            albumResults = Array(youtubeCachedSearchAlbums.prefix(albumPageSize))
+            playlistResults = []
+            canLoadMoreSongs = youtubeCanFetchMore
+            canLoadMoreAlbums = albumResults.count < youtubeCachedSearchAlbums.count
+            canLoadMorePlaylists = false
+
         case .all:
             artistResults = []
             activeTidalSearchHost = nil
@@ -2511,6 +2610,10 @@ final class DownloadViewModel: ObservableObject {
             tidalCachedSearchAlbums = []
             tidalSearchItemsCache = []
             tidalTotalItemCount = 0
+            youtubeCachedSearchTracks = []
+            youtubeCachedSearchAlbums = []
+            youtubeCanFetchMore = false
+            youtubeSearchOffset = 0
 
             let songs = await AppleMusicAPI.shared.searchSongs(query: trimmed, limit: songPageSize, offset: 0)
             let albums = await searchAlbums(query: trimmed, limit: albumPageSize, offset: 0)
@@ -2562,6 +2665,34 @@ final class DownloadViewModel: ObservableObject {
                 )
             }
 
+            let tidalResponse = await fetchPreferredTidalSearchResponse(query: trimmed, limit: songPageSize, offset: 0, logLabel: "all-search-tidal")
+            let tidalItems = tidalResponse?.data.items ?? []
+            tidalSearchItemsCache = tidalItems
+            tidalTotalItemCount = tidalResponse?.data.totalNumberOfItems ?? tidalItems.count
+            tidalCachedSearchTracks = mapTidalSearchItemsToTracks(tidalItems)
+            tidalCachedSearchAlbums = Array(uniqueAlbums(mapTidalSearchItemsToAlbums(tidalItems)).prefix(200))
+
+            let youtubeCandidates = await MetadataProvider.searchYouTubeForMetadata(query: trimmed, limit: songPageSize)
+            youtubeCachedSearchTracks = youtubeCandidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = youtubeCandidates.count == songPageSize
+
             let batch = await fetchMetadataSearchTracks(
                 query: trimmed,
                 limit: songPageSize,
@@ -2574,11 +2705,21 @@ final class DownloadViewModel: ObservableObject {
             metadataCachedSearchAlbums = buildMetadataAlbums(from: metadataCachedSearchTracks)
             metadataCachedSearchPlaylists = []
 
-            songResults = mappedAMSongs + Array(metadataCachedSearchTracks.prefix(songPageSize))
-            albumResults = mappedAMAlbums + Array(metadataCachedSearchAlbums.prefix(albumPageSize))
+            var allSongs = mappedAMSongs
+            allSongs.append(contentsOf: tidalCachedSearchTracks)
+            allSongs.append(contentsOf: youtubeCachedSearchTracks)
+            allSongs.append(contentsOf: metadataCachedSearchTracks)
+            songResults = uniqueTracks(allSongs).prefix(songPageSize * 2).map { $0 }
+
+            var allAlbums = mappedAMAlbums
+            allAlbums.append(contentsOf: tidalCachedSearchAlbums)
+            allAlbums.append(contentsOf: youtubeCachedSearchAlbums)
+            allAlbums.append(contentsOf: metadataCachedSearchAlbums)
+            albumResults = uniqueAlbums(allAlbums).prefix(albumPageSize * 2).map { $0 }
+
             playlistResults = mappedAMPlaylists
-            canLoadMoreSongs = songs.count == songPageSize || metadataCanFetchMoreDeezer || metadataCachedSearchTracks.count > songPageSize
-            canLoadMoreAlbums = albums.count == albumPageSize || metadataCanFetchMoreDeezer || metadataCachedSearchAlbums.count > albumPageSize
+            canLoadMoreSongs = songs.count == songPageSize || tidalSearchItemsCache.count < tidalTotalItemCount || youtubeCanFetchMore || metadataCanFetchMoreDeezer || metadataCachedSearchTracks.count > songPageSize
+            canLoadMoreAlbums = albums.count == albumPageSize || tidalCachedSearchAlbums.count > albumPageSize || youtubeCachedSearchAlbums.count > albumPageSize || metadataCachedSearchAlbums.count > albumPageSize || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = playlists.count == playlistPageSize
         }
     }
@@ -2633,6 +2774,39 @@ final class DownloadViewModel: ObservableObject {
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
 
+        case .youtube:
+            let candidates = await MetadataProvider.searchYouTubeForMetadata(query: lastSearchQuery, limit: songPageSize)
+            let newTracks = candidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchTracks.append(contentsOf: newTracks.filter { incoming in
+                !youtubeCachedSearchTracks.contains(where: { $0.id == incoming.id })
+            })
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = candidates.count == songPageSize
+            youtubeSearchOffset += candidates.count
+
+            let nextCount = min(songResults.count + songPageSize, youtubeCachedSearchTracks.count)
+            songResults = Array(youtubeCachedSearchTracks.prefix(nextCount))
+            albumResults = Array(youtubeCachedSearchAlbums.prefix(max(albumResults.count, min(albumPageSize, youtubeCachedSearchAlbums.count))))
+            canLoadMoreSongs = youtubeCanFetchMore
+            canLoadMoreAlbums = albumResults.count < youtubeCachedSearchAlbums.count
+            canLoadMorePlaylists = false
+
         case .all:
             let offset = songResults.count
             let songs = await AppleMusicAPI.shared.searchSongs(query: lastSearchQuery, limit: songPageSize, offset: offset)
@@ -2658,6 +2832,44 @@ final class DownloadViewModel: ObservableObject {
                 !songResults.contains(where: { $0.id == incoming.id })
             })
 
+            let youtubeCandidates = await MetadataProvider.searchYouTubeForMetadata(query: lastSearchQuery, limit: songPageSize)
+            let newYouTubeTracks = youtubeCandidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchTracks.append(contentsOf: newYouTubeTracks.filter { incoming in
+                !youtubeCachedSearchTracks.contains(where: { $0.id == incoming.id })
+            })
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = youtubeCandidates.count == songPageSize
+            let youtubeNextCount = min(songResults.count + songPageSize, youtubeCachedSearchTracks.count)
+            let youtubeSongs = Array(youtubeCachedSearchTracks.prefix(youtubeNextCount))
+            songResults.append(contentsOf: youtubeSongs.filter { incoming in
+                !songResults.contains(where: { $0.id == incoming.id })
+            })
+
+            await expandTidalSearchCacheIfNeeded(minimumItemCount: songResults.count + songPageSize)
+            tidalCachedSearchTracks = mapTidalSearchItemsToTracks(tidalSearchItemsCache)
+            tidalCachedSearchAlbums = Array(uniqueAlbums(mapTidalSearchItemsToAlbums(tidalSearchItemsCache)).prefix(400))
+            let tidalNextCount = min(songResults.count + songPageSize, tidalCachedSearchTracks.count)
+            let tidalSongs = Array(tidalCachedSearchTracks.prefix(tidalNextCount))
+            songResults.append(contentsOf: tidalSongs.filter { incoming in
+                !songResults.contains(where: { $0.id == incoming.id })
+            })
+
             await expandMetadataSearchCacheIfNeeded(minimumTrackCount: songResults.count + songPageSize)
             let nextCount = min(songResults.count + songPageSize, metadataCachedSearchTracks.count)
             let metadataSongs = Array(metadataCachedSearchTracks.prefix(nextCount))
@@ -2665,8 +2877,8 @@ final class DownloadViewModel: ObservableObject {
                 !songResults.contains(where: { $0.id == incoming.id })
             })
             albumResults = Array(metadataCachedSearchAlbums.prefix(max(albumResults.count, min(albumPageSize, metadataCachedSearchAlbums.count))))
-            canLoadMoreSongs = songs.count == songPageSize || metadataCanFetchMoreDeezer || songResults.count < metadataCachedSearchTracks.count
-            canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
+            canLoadMoreSongs = songs.count == songPageSize || tidalSearchItemsCache.count < tidalTotalItemCount || youtubeCanFetchMore || metadataCanFetchMoreDeezer || songResults.count < metadataCachedSearchTracks.count
+            canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || youtubeCanFetchMore || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
         }
     }
@@ -2720,6 +2932,38 @@ final class DownloadViewModel: ObservableObject {
             canLoadMoreAlbums = albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
 
+        case .youtube:
+            let candidates = await MetadataProvider.searchYouTubeForMetadata(query: lastSearchQuery, limit: songPageSize)
+            let newTracks = candidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchTracks.append(contentsOf: newTracks.filter { incoming in
+                !youtubeCachedSearchTracks.contains(where: { $0.id == incoming.id })
+            })
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = candidates.count == songPageSize
+            youtubeSearchOffset += candidates.count
+
+            let desiredAlbumCount = albumResults.count + albumPageSize
+            albumResults = Array(youtubeCachedSearchAlbums.prefix(min(desiredAlbumCount, youtubeCachedSearchAlbums.count)))
+            canLoadMoreSongs = youtubeCanFetchMore
+            canLoadMoreAlbums = albumResults.count < youtubeCachedSearchAlbums.count
+            canLoadMorePlaylists = false
+
         case .all:
             let offset = albumResults.count
             let albums = await searchAlbums(query: lastSearchQuery, limit: albumPageSize, offset: offset)
@@ -2742,13 +2986,49 @@ final class DownloadViewModel: ObservableObject {
             })
 
             let desiredAlbumCount = albumResults.count + albumPageSize
+            await expandTidalSearchCacheIfNeeded(minimumAlbumCount: desiredAlbumCount)
+            tidalCachedSearchTracks = mapTidalSearchItemsToTracks(tidalSearchItemsCache)
+            tidalCachedSearchAlbums = Array(uniqueAlbums(mapTidalSearchItemsToAlbums(tidalSearchItemsCache)).prefix(400))
+            let tidalAlbums = Array(tidalCachedSearchAlbums.prefix(min(desiredAlbumCount, tidalCachedSearchAlbums.count)))
+            albumResults.append(contentsOf: tidalAlbums.filter { incoming in
+                !albumResults.contains(where: { $0.id == incoming.id })
+            })
+
+            let youtubeCandidates = await MetadataProvider.searchYouTubeForMetadata(query: lastSearchQuery, limit: songPageSize)
+            let newYouTubeTracks = youtubeCandidates.map { candidate in
+                let parsed = MetadataProvider.normalizeYouTubeTitle(candidate.title, channel: candidate.channelTitle)
+                return DownloadTrack(
+                    id: "youtube-\(candidate.videoID)",
+                    name: parsed.title,
+                    artistLine: parsed.artist,
+                    albumName: parsed.album,
+                    artworkURL: candidate.thumbnailURL,
+                    isExplicit: false,
+                    sourceURL: "https://music.youtube.com/watch?v=\(candidate.videoID)",
+                    sourceContext: .song,
+                    provider: .youtube,
+                    artistIdentifier: candidate.channelTitle,
+                    albumIdentifier: nil,
+                    previewURL: nil
+                )
+            }
+            youtubeCachedSearchTracks.append(contentsOf: newYouTubeTracks.filter { incoming in
+                !youtubeCachedSearchTracks.contains(where: { $0.id == incoming.id })
+            })
+            youtubeCachedSearchAlbums = buildMetadataAlbums(from: youtubeCachedSearchTracks)
+            youtubeCanFetchMore = youtubeCandidates.count == songPageSize
+            let youtubeAlbums = Array(youtubeCachedSearchAlbums.prefix(min(desiredAlbumCount, youtubeCachedSearchAlbums.count)))
+            albumResults.append(contentsOf: youtubeAlbums.filter { incoming in
+                !albumResults.contains(where: { $0.id == incoming.id })
+            })
+
             await expandMetadataSearchCacheIfNeeded(minimumAlbumCount: desiredAlbumCount)
             let metadataAlbums = Array(metadataCachedSearchAlbums.prefix(min(desiredAlbumCount, metadataCachedSearchAlbums.count)))
             albumResults.append(contentsOf: metadataAlbums.filter { incoming in
                 !albumResults.contains(where: { $0.id == incoming.id })
             })
-            canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || metadataCanFetchMoreDeezer
-            canLoadMoreAlbums = albums.count == albumPageSize || albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
+            canLoadMoreSongs = songResults.count < metadataCachedSearchTracks.count || tidalSearchItemsCache.count < tidalTotalItemCount || youtubeCanFetchMore || metadataCanFetchMoreDeezer
+            canLoadMoreAlbums = albums.count == albumPageSize || tidalCachedSearchAlbums.count > desiredAlbumCount || youtubeCachedSearchAlbums.count > desiredAlbumCount || albumResults.count < metadataCachedSearchAlbums.count || metadataCanFetchMoreDeezer
             canLoadMorePlaylists = false
         }
     }
@@ -2847,6 +3127,8 @@ final class DownloadViewModel: ObservableObject {
         case .tidal:
             return await buildMetadataArtistProfile(for: artist.name)
         case .metadata:
+            return await buildMetadataArtistProfile(for: artist.name)
+        case .youtube:
             return await buildMetadataArtistProfile(for: artist.name)
         case .all:
             return await buildMetadataArtistProfile(for: artist.name)

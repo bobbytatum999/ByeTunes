@@ -700,6 +700,27 @@ struct MusicView: View {
                                     }
                                     Logger.shared.log("[MusicView] Enriched from YouTube: \(song.title) - \(song.artist)")
                                 }
+                            } else {
+                                let searchQuery = "\(song.artist) \(song.title)"
+                                let candidates = await MetadataProvider.searchYouTubeForMetadata(query: searchQuery, limit: 3)
+                                if let bestMatch = candidates.first {
+                                    let parsed = MetadataProvider.normalizeYouTubeTitle(bestMatch.title, channel: bestMatch.channelTitle)
+                                    song.title = parsed.title
+                                    song.artist = parsed.artist
+                                    song.album = parsed.album
+                                    song.youtubeVideoID = bestMatch.videoID
+                                    if let thumbURL = bestMatch.thumbnailURL,
+                                       let (data, _) = try? await URLSession.shared.data(from: thumbURL) {
+                                        song.artworkData = data
+                                    }
+                                    if let duration = bestMatch.durationMs, duration > 0 {
+                                        song.durationMs = duration
+                                    }
+                                    if !sourcesUsed.contains(.youtube) {
+                                        sourcesUsed.append(.youtube)
+                                    }
+                                    Logger.shared.log("[MusicView] Enriched from YouTube search: \(song.title) - \(song.artist)")
+                                }
                             }
                         case .itunes:
                             let enriched = await SongMetadata.enrichWithiTunesMetadata(song)

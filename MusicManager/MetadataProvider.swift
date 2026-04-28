@@ -62,6 +62,7 @@ struct MetadataProviderSettings {
         let old = UserDefaults.standard.string(forKey: legacySourceKey) ?? "local"
         let migrated: [MetadataProviderID]
         switch old {
+        case "youtube": migrated = [.local, .youtube]
         case "itunes": migrated = [.local, .itunes]
         case "deezer": migrated = [.local, .deezer]
         case "apple": migrated = [.local, .apple]
@@ -168,9 +169,14 @@ enum MetadataProvider {
     }
 
     static func fetchYouTubeMetadata(videoID: String, apiKey: String? = nil) async -> YouTubeMetadataCandidate? {
-        let key = apiKey ?? ""
-        guard !key.isEmpty else { return nil }
-        let urlString = "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=\(videoID)&key=\(key)"
+        if let key = apiKey, !key.isEmpty {
+            return await fetchYouTubeMetadataWithAPIKey(videoID: videoID, apiKey: key)
+        }
+        return await fetchYouTubeMetadataFree(videoID: videoID)
+    }
+
+    private static func fetchYouTubeMetadataWithAPIKey(videoID: String, apiKey: String) async -> YouTubeMetadataCandidate? {
+        let urlString = "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=\(videoID)&key=\(apiKey)"
         guard let url = URL(string: urlString) else { return nil }
 
         do {
@@ -204,8 +210,95 @@ enum MetadataProvider {
                 durationMs: durationMs
             )
         } catch {
-            Logger.shared.log("[YouTubeProvider] Fetch failed: \(error)")
+            Logger.shared.log("[YouTubeProvider] API Key fetch failed: \(error)")
             return nil
+        }
+    }
+
+    static func fetchYouTubeMetadataFree(videoID: String) async -> YouTubeMetadataCandidate? {
+        let oembedURLString = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=\(videoID)&format=json"
+        guard let url = URL(string: oembedURLString) else { return nil }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let title = json?["title"] as? String ?? ""
+            let authorName = json?["author_name"] as? String ?? ""
+            let thumbnailURL = json?["thumbnail_url"] as? String
+
+            let thumbnailHQ = thumbnailURL?.replacingOccurrences(of: "/hqdefault_", with: "/hqdefault_")
+                .replacingOccurrences(of: "hqdefault.jpg", with: "hqdefault.jpg")
+
+            if title.isEmpty && authorName.isEmpty {
+                return nil
+            }
+
+            return YouTubeMetadataCandidate(
+                videoID: videoID,
+                title: title,
+                channelTitle: authorName,
+                description: nil,
+                tags: [],
+                thumbnailURL: thumbnailHQ.flatMap { URL(string: $0) },
+                durationMs: nil
+            )
+        } catch {
+            Logger.shared.log("[YouTubeProvider] Free oEmbed fetch failed: \(error)")
+            return nil
+        }
+    }
+
+    static func searchYouTubeForMetadata(query: String, limit: Int = 5) async -> [YouTubeMetadataCandidate] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let searchURLString = "https://music.youtube.com/search?q=\(encodedQuery)"
+        guard let searchURL = URL(string: searchURLString) else { return [] }
+
+        do {
+            var request = URLRequest(url: searchURL)
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+
+            guard let html = String(data: data, encoding: .utf8) else { return [] }
+
+            var videoIDs: [String] = []
+            let patterns = [
+                #""videoId":"([a-zA-Z0-9_-]{11})""#,
+                #"watch\?v=([a-zA-Z0-9_-]{11})"#,
+                #"/watch\?v=([a-zA-Z0-9_-]{11})"#,
+                #""videoIds"":"([a-zA-Z0-9_-]{11})""#,
+                #"%22videoId%22%3A%22([a-zA-Z0-9_-]{11})%22"#
+            ]
+
+            for pattern in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+                for match in matches {
+                    if let range = Range(match.range(at: 1), in: html) {
+                        let videoID = String(html[range])
+                        if !videoIDs.contains(videoID) {
+                            videoIDs.append(videoID)
+                        }
+                    }
+                }
+            }
+
+            let limitedIDs = Array(videoIDs.prefix(limit))
+            var results: [YouTubeMetadataCandidate] = []
+
+            for videoID in limitedIDs {
+                if let candidate = await fetchYouTubeMetadataFree(videoID: videoID) {
+                    results.append(candidate)
+                }
+            }
+
+            return results
+        } catch {
+            Logger.shared.log("[YouTubeProvider] YouTube Music search failed: \(error)")
+            return []
         }
     }
 

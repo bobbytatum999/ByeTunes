@@ -1751,6 +1751,8 @@ private struct DownloaderSettingsScreen: View {
         .onChange(of: metadataSource) { newValue in
             if newValue == "all" {
                 MetadataProviderSettings.saveSources(MetadataProviderSettings.defaultSources)
+            } else if newValue == "youtube" {
+                MetadataProviderSettings.saveSources([.local, .youtube])
             } else if let provider = MetadataProviderID(rawValue: newValue) {
                 MetadataProviderSettings.saveSources([provider])
             }
@@ -1806,6 +1808,7 @@ private struct DownloaderSettingsScreen: View {
 
 private enum MetadataSourceOption: String, CaseIterable, Identifiable, CustomStringConvertible {
     case local
+    case youtube
     case itunes
     case deezer
     case apple
@@ -1816,6 +1819,7 @@ private enum MetadataSourceOption: String, CaseIterable, Identifiable, CustomStr
     var description: String {
         switch self {
         case .local: return "Local Files"
+        case .youtube: return "YouTube"
         case .itunes: return "iTunes API"
         case .deezer: return "Deezer API"
         case .apple: return "Apple Music"
@@ -1828,10 +1832,11 @@ private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, C
     case appleMusic
     case tidal
     case metadata
+    case youtube
     case all
 
     static var allCases: [DownloadSearchProviderOption] {
-        [.appleMusic, .tidal, .metadata, .all]
+        [.appleMusic, .tidal, .metadata, .youtube, .all]
     }
 
     var id: String { rawValue }
@@ -1841,6 +1846,7 @@ private enum DownloadSearchProviderOption: String, CaseIterable, Identifiable, C
         case .appleMusic: return "Apple Music"
         case .tidal: return "Tidal"
         case .metadata: return "iTunes + Deezer"
+        case .youtube: return "YouTube"
         case .all: return "All Sources"
         }
     }
