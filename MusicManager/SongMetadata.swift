@@ -84,6 +84,8 @@ struct SongMetadata: Identifiable {
     var releaseDate: Int = 0
     
     var richAppleMetadataFetched: Bool = false
+    var youtubeVideoID: String? = nil
+    var metadataSourcesUsed: [MetadataProviderID] = []
 
     var isDolbyAtmosCapable: Bool {
         localFileHasDolbyAtmos || appleMusicAudioTraits.contains { $0.caseInsensitiveCompare("atmos") == .orderedSame }
