@@ -169,7 +169,10 @@ enum MetadataProvider {
     /// - Returns: The parsed dictionary, or `nil` if the request fails or returns non-JSON.
     private static func fetchJSONDictionary(from url: URL) async -> [String: Any]? {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             return try JSONSerialization.jsonObject(with: data) as? [String: Any]
         } catch {
@@ -182,7 +185,10 @@ enum MetadataProvider {
     /// - Returns: The parsed array, or `nil` if the request fails or returns non-JSON.
     private static func fetchJSONArray(from url: URL) async -> [[String: Any]]? {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             return try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         } catch {
@@ -462,9 +468,74 @@ enum MetadataProvider {
             channelTitle: author,
             description: nil,
             tags: [],
-            thumbnailURL: thumbnailURL.flatMap { URL(string: $0) },
+            thumbnailURL: thumbnailURL.flatMap { URL(string: $0) } ?? URL(string: "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg"),
             durationMs: lengthSeconds.map { $0 * 1000 }
         )
+    }
+
+    // MARK: - Innertube Search Fallback (free Swift-native alternative to Invidious/Piped search)
+
+    private static func searchYouTubeInnertube(query: String, limit: Int) async -> [YouTubeMetadataCandidate] {
+        let url = URL(string: "https://www.youtube.com/youtubei/v1/search?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")!
+        let payload: [String: Any] = [
+            "query": query,
+            "context": [
+                "client": [
+                    "clientName": "ANDROID",
+                    "clientVersion": "17.10.35",
+                    "androidSdkVersion": 30,
+                    "hl": "en",
+                    "gl": "US"
+                ]
+            ]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("com.google.android.youtube/17.10.35 (Linux; U; Android 11) gzip", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        guard let json = await fetchJSONDictionary(for: request) else { return [] }
+        guard
+            let contents = json["contents"] as? [String: Any],
+            let twoColumn = contents["twoColumnSearchResultsRenderer"] as? [String: Any],
+            let primary = twoColumn["primaryContents"] as? [String: Any],
+            let sectionList = primary["sectionListRenderer"] as? [String: Any],
+            let sections = sectionList["contents"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        var parsed: [YouTubeMetadataCandidate] = []
+        for section in sections {
+            guard let itemSection = section["itemSectionRenderer"] as? [String: Any],
+                  let items = itemSection["contents"] as? [[String: Any]] else { continue }
+
+            for item in items {
+                guard let videoRenderer = item["videoRenderer"] as? [String: Any],
+                      let videoID = videoRenderer["videoId"] as? String else { continue }
+
+                let titleRuns = ((videoRenderer["title"] as? [String: Any])?["runs"] as? [[String: Any]]) ?? []
+                let ownerRuns = (((videoRenderer["ownerText"] as? [String: Any])?["runs"] as? [[String: Any]]) ?? [])
+                let title = titleRuns.compactMap { $0["text"] as? String }.joined()
+                let owner = ownerRuns.compactMap { $0["text"] as? String }.joined()
+
+                if title.isEmpty && owner.isEmpty { continue }
+                parsed.append(YouTubeMetadataCandidate(
+                    videoID: videoID,
+                    title: title,
+                    channelTitle: owner,
+                    description: nil,
+                    tags: [],
+                    thumbnailURL: URL(string: "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg"),
+                    durationMs: nil
+                ))
+                if parsed.count >= limit { return parsed }
+            }
+        }
+        return parsed
     }
 
     // MARK: - Search
@@ -609,8 +680,10 @@ enum MetadataProvider {
             return results
         } catch {
             Logger.shared.log("[YouTubeProvider] YouTube HTML search failed: \(error)")
-            return []
         }
+
+        // Fallback: Innertube search (Swift-native, no third-party host dependency)
+        return await searchYouTubeInnertube(query: query, limit: limit)
     }
 
     // MARK: - Audio Stream Resolution
