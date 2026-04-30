@@ -10,7 +10,7 @@ import Foundation
 import VideoToolbox
 #endif
 
-protocol Codec: Sendable {
+protocol Codec {
     associatedtype BaseCodec where BaseCodec: Equatable
     
     var baseCodec: BaseCodec? { get }
@@ -28,7 +28,7 @@ public enum VideoCodec: Codec, Equatable {
     case vp9(version: String)
     case unknown(codec: String)
     
-    public enum BaseCodec: Equatable, Sendable {
+    public enum BaseCodec: Equatable {
         case mp4v, av1, avc1, vp9
     }
     
@@ -99,7 +99,7 @@ public enum AudioCodec: Codec, Equatable {
     case ac3
     case unknown(codec: String)
     
-    public enum BaseCodec: Equatable, Sendable {
+    public enum BaseCodec: Equatable {
         case mp4a, opus, ec3, ac3
     }
     
