@@ -21,14 +21,14 @@ protocol Codec: Sendable {
 
 // MARK: - Video Codec
 
-public enum VideoCodec: Codec {
+public enum VideoCodec: Codec, Equatable {
     case mp4v(version: String)
     case av1(version: String)
     case avc1(version: String)
     case vp9(version: String)
     case unknown(codec: String)
     
-    public enum BaseCodec {
+    public enum BaseCodec: Equatable, Sendable {
         case mp4v, av1, avc1, vp9
     }
     
@@ -99,7 +99,7 @@ public enum AudioCodec: Codec, Equatable {
     case ac3
     case unknown(codec: String)
     
-    public enum BaseCodec {
+    public enum BaseCodec: Equatable, Sendable {
         case mp4a, opus, ec3, ac3
     }
     
